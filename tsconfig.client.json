@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./src/client",
+    "outDir": "./dist/client",
+    "types": [],
+    "module": "Node16",
+    "moduleResolution": "Node16"
+  },
+  "include": ["src/client/**/*"],
+  "exclude": ["node_modules", "src/client/**/__tests__/**", "src/client/**/*.html"]
+}

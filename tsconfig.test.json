@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": ".test-dist",
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".test-dist",
+    "src/client/index.html",
+    "src/client/components/index.ts",
+    "src/client/components/layout.ts",
+    "src/client/components/chat/index.ts",
+    "src/client/components/chat/ChatView.ts",
+    "src/client/components/chat/chat.css"
+  ]
+}
