@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import type { Chat, ChatData, CreateChatInput } from '../chat-types.js';
+import type { Chat, ChatData } from '../chat-types.js';
 
 interface ChatRow {
   id: number;
@@ -41,7 +41,7 @@ function parseChatData(raw: string): ChatData {
   return {
     title: data.title.trim(),
     modelConnectionId: data.modelConnectionId,
-    modelId: data.modelId === null ? null : data.modelId.trim(),
+    modelId: data.modelId,
   };
 }
 
@@ -62,7 +62,7 @@ export class ChatRepository {
     this.db = db;
   }
 
-  async create(userId: number, input: CreateChatInput): Promise<Chat> {
+  async create(userId: number, input: ChatData): Promise<Chat> {
     const now = Math.floor(Date.now() / 1000);
     const data: ChatData = {
       title: input.title,

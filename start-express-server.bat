@@ -30,7 +30,7 @@ echo Starting Express server with Node.js...
 echo Press Ctrl+C to stop.
 echo.
 
-node dist/server.js
+node --env-file=.env dist/server.js
 
 if errorlevel 1 (
     echo.

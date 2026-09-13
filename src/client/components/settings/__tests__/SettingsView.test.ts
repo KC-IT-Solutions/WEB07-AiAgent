@@ -24,6 +24,10 @@ await describe('SettingsView', async () => {
 
   const settingsViewPath = resolve(projectRoot, 'src/client/components/settings/SettingsView.ts');
   const content = readFileSync(settingsViewPath, 'utf-8');
+  const toolsContent = readFileSync(
+    resolve(projectRoot, 'src/client/components/tools/ToolsView.ts'),
+    'utf-8',
+  );
 
   await it('should have a valid component file exporting createSettingsView', () => {
     assert.ok(content.includes('export function createSettingsView'));
@@ -171,10 +175,90 @@ await describe('SettingsView', async () => {
     );
   });
 
+  await it('loads registered tools and opens their settings in the shared modal', () => {
+    assert.ok(toolsContent.includes("fetch('/api/tools')"));
+    assert.ok(toolsContent.includes("toolsTitle.textContent = 'Tools'"));
+    assert.ok(toolsContent.includes('openToolSettings(tool, button)'));
+    assert.ok(toolsContent.includes('createConfirmationModal({'));
+    assert.ok(toolsContent.includes("title: `${tool.displayName} settings`"));
+    assert.ok(!content.includes("fetch('/api/tools')"));
+    assert.ok(!content.includes("toolsTitle.textContent = 'Tools'"));
+  });
+
+  await it('saves validated tool settings while Cancel performs no request', () => {
+    assert.ok(toolsContent.includes('Results per search must be an integer from 1 to 10.'));
+    assert.ok(toolsContent.includes('`/api/tools/${tool.name}/settings`'));
+    assert.ok(toolsContent.includes("method: 'PUT'"));
+    assert.ok(toolsContent.includes('enabledForChat: enabled.checked'));
+    assert.ok(toolsContent.includes('pageSize: parsedPageSize'));
+    assert.ok(toolsContent.includes('safeSearch: selectedSafeSearch'));
+    assert.ok(toolsContent.includes("'Request delay (ms)'"));
+    assert.ok(toolsContent.includes("'Cooldown after HTTP 202 (ms)'"));
+    assert.ok(toolsContent.includes("'tool-request-delay-ms'"));
+    assert.ok(toolsContent.includes("'tool-cooldown-after-202-ms'"));
+    assert.ok(toolsContent.includes('requestDelayMs: parsedRequestDelayMs'));
+    assert.ok(toolsContent.includes('cooldownAfter202Ms: parsedCooldownAfter202Ms'));
+    assert.ok(toolsContent.includes("input.step = '1'"));
+    assert.ok(toolsContent.includes('Request delay must be an integer of 0 ms or more.'));
+    assert.ok(toolsContent.includes('HTTP 202 cooldown must be an integer of 0 ms or more.'));
+    assert.ok(toolsContent.includes("requestDelayMs?.value.trim() === ''"));
+    assert.ok(toolsContent.includes("cooldownAfter202Ms?.value.trim() === ''"));
+    assert.ok(toolsContent.includes('Number.isSafeInteger(parsedRequestDelayMs)'));
+    assert.ok(toolsContent.includes('Number.isSafeInteger(parsedCooldownAfter202Ms)'));
+    assert.ok(toolsContent.includes('onCancel: () => undefined'));
+  });
+
+  await it('supports Visit Website fields and validation in the shared modal', () => {
+    assert.ok(toolsContent.includes("name: 'visit_website'"));
+    assert.ok(toolsContent.includes("'tool-content-limit'"));
+    assert.ok(toolsContent.includes("'Content limit'"));
+    assert.ok(toolsContent.includes("'tool-max-links'"));
+    assert.ok(toolsContent.includes("'Max links'"));
+    assert.ok(toolsContent.includes("'tool-max-images'"));
+    assert.ok(toolsContent.includes("'Max images'"));
+    assert.ok(toolsContent.includes('Content limit must be an integer from 200 to 10000.'));
+    assert.ok(toolsContent.includes('Max links must be an integer from 0 to 40.'));
+    assert.ok(toolsContent.includes('Max images must be an integer from 0 to 20.'));
+    assert.ok(toolsContent.includes('body: JSON.stringify(updatedSettings)'));
+    assert.ok(toolsContent.includes('onCancel: () => undefined'));
+  });
+
+  await it('loads and explicitly saves nullable default Chat model settings', () => {
+    assert.ok(content.includes("chatTitle.textContent = 'Chat'"));
+    assert.ok(content.includes("'Default model connection'"));
+    assert.ok(content.includes("'Default model'"));
+    assert.ok(content.includes("createPlaceholder('Select connection')"));
+    assert.ok(content.includes("createPlaceholder('Select model')"));
+    assert.ok(content.includes("fetch('/api/settings/chat')"));
+    assert.ok(content.includes("method: 'PUT'"));
+    assert.ok(content.includes('showReasoning: showReasoningInput.checked'));
+    assert.ok(content.includes('showToolCalls: showToolCallsInput.checked'));
+    assert.ok(content.includes("'Show model reasoning'"));
+    assert.ok(content.includes("'Show tool calls'"));
+    assert.ok(content.includes("chatForm.addEventListener('submit'"));
+  });
+
+  await it('uses saved enabled connections and existing model discovery for Chat defaults', () => {
+    assert.ok(content.includes('savedConnections.filter((item) => item.data.enabled)'));
+    assert.ok(content.includes('`/api/model-connections/${connectionId}/models`'));
+    assert.ok(content.includes('defaultModelSelect.disabled = true'));
+    assert.ok(content.includes('loadDefaultModels(connectionId, null)'));
+    assert.ok(!content.includes('localStorage'));
+  });
+
   await it('should call /api/model-connections/test endpoint', () => {
     assert.ok(
       content.includes('/api/model-connections/test'),
       'Should call the model-connections test endpoint',
+    );
+    const testCallbackStart = content.indexOf('const testCallback');
+    const testCallbackSection = content.substring(testCallbackStart);
+    assert.ok(testCallbackSection.includes("'settings-saved-connections'"));
+    assert.ok(
+      testCallbackSection.includes(
+        'JSON.stringify({ baseUrl, apiKey, timeoutMinutes, connectionId })',
+      ),
+      'Saved connection tests should identify the credential to resolve server-side',
     );
   });
 
@@ -192,16 +276,24 @@ await describe('SettingsView', async () => {
     );
   });
 
-  await it('should not send apiKey to persistence endpoint', () => {
+  await it('should send the entered apiKey to the persistence endpoint', () => {
     const saveCallbackStart = content.indexOf('const saveCallback');
     const testCallbackStart = content.indexOf('const testCallback');
     const saveCallbackSection = content.substring(saveCallbackStart, testCallbackStart);
     const stringifyMatch = saveCallbackSection.match(/JSON\.stringify\(\{([^}]+)\}/);
     assert.ok(stringifyMatch, 'Should have a JSON.stringify call in save callback');
     assert.ok(
-      !stringifyMatch[1].includes('apiKey'),
-      'Save persistence request body should not include apiKey',
+      stringifyMatch[1].includes('apiKey'),
+      'Save persistence request body should include apiKey',
     );
+  });
+
+  await it('should clear API key input and state after a successful save', () => {
+    const saveCallbackStart = content.indexOf('const saveCallback');
+    const testCallbackStart = content.indexOf('const testCallback');
+    const saveCallbackSection = content.substring(saveCallbackStart, testCallbackStart);
+    assert.ok(saveCallbackSection.includes("apiKeyInput.value = ''"));
+    assert.ok(saveCallbackSection.includes("connectionState.apiKey = ''"));
   });
 
   await it('should populate model selector on successful connection', () => {
@@ -378,6 +470,10 @@ await describe('SettingsView', async () => {
       assert.ok(
         !populateSection.includes('data.apiKey'),
         'Should not read an apiKey value from persisted connection data',
+      );
+      assert.ok(
+        populateSection.includes("connectionState.apiKey = ''"),
+        'Should clear retained API key state when selecting a saved connection',
       );
     });
 

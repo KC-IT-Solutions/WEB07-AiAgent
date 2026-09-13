@@ -20,6 +20,7 @@ interface SavedConnectionData {
 
 interface SavedConnection {
   id: number;
+  hasApiKey?: boolean;
   data: SavedConnectionData;
 }
 
@@ -97,8 +98,12 @@ function isSavedConnection(value: unknown): value is SavedConnection {
     return false;
   }
 
-  const candidate = value as { id?: unknown; data?: unknown };
+  const candidate = value as { id?: unknown; hasApiKey?: unknown; data?: unknown };
   if (typeof candidate.id !== 'number') {
+    return false;
+  }
+
+  if (candidate.hasApiKey !== undefined && typeof candidate.hasApiKey !== 'boolean') {
     return false;
   }
 
@@ -286,6 +291,7 @@ function createSettingsForm(
 export function createSettingsView(): HTMLElement {
   const container = document.createElement('div');
   container.className = 'settings-view-container';
+  let savedConnections: SavedConnection[] = [];
 
   const headerCard = document.createElement('div');
   headerCard.className = 'settings-card';
@@ -299,6 +305,221 @@ export function createSettingsView(): HTMLElement {
   headerCard.appendChild(description);
 
   container.appendChild(headerCard);
+
+  const chatCard = document.createElement('section');
+  chatCard.className = 'settings-card';
+  const chatTitle = document.createElement('h2');
+  chatTitle.textContent = 'Chat';
+  const chatDescription = document.createElement('p');
+  chatDescription.textContent = 'Choose the model selection copied into newly created chats.';
+  const chatForm = document.createElement('form');
+  chatForm.className = 'settings-form';
+  const defaultConnectionSelect = document.createElement('select');
+  defaultConnectionSelect.id = 'settings-chat-default-connection';
+  defaultConnectionSelect.className = 'settings-input';
+  const defaultModelSelect = document.createElement('select');
+  defaultModelSelect.id = 'settings-chat-default-model';
+  defaultModelSelect.className = 'settings-input';
+  defaultModelSelect.disabled = true;
+  const showReasoningInput = document.createElement('input');
+  showReasoningInput.type = 'checkbox';
+  showReasoningInput.id = 'settings-chat-show-reasoning';
+  const showReasoningRow = document.createElement('div');
+  showReasoningRow.className = 'settings-checkbox-row';
+  showReasoningRow.appendChild(showReasoningInput);
+  showReasoningRow.appendChild(createFormLabel('Show model reasoning', showReasoningInput.id));
+  const showToolCallsInput = document.createElement('input');
+  showToolCallsInput.type = 'checkbox';
+  showToolCallsInput.id = 'settings-chat-show-tool-calls';
+  const showToolCallsRow = document.createElement('div');
+  showToolCallsRow.className = 'settings-checkbox-row';
+  showToolCallsRow.appendChild(showToolCallsInput);
+  showToolCallsRow.appendChild(createFormLabel('Show tool calls', showToolCallsInput.id));
+  const createPlaceholder = (text: string): HTMLOptionElement => {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = text;
+    return option;
+  };
+  defaultConnectionSelect.appendChild(createPlaceholder('Select connection'));
+  defaultModelSelect.appendChild(createPlaceholder('Select model'));
+  const chatSaveButton = document.createElement('button');
+  chatSaveButton.type = 'submit';
+  chatSaveButton.className = 'settings-save-button';
+  chatSaveButton.textContent = 'Save';
+  chatSaveButton.disabled = true;
+  const chatStatus = document.createElement('p');
+  chatStatus.className = 'settings-saved-status';
+  chatStatus.textContent = 'Loading Chat settings...';
+  chatForm.appendChild(
+    createFormGroup(
+      createFormLabel('Default model connection', defaultConnectionSelect.id),
+      defaultConnectionSelect,
+    ),
+  );
+  chatForm.appendChild(showReasoningRow);
+  chatForm.appendChild(showToolCallsRow);
+  chatForm.appendChild(
+    createFormGroup(createFormLabel('Default model', defaultModelSelect.id), defaultModelSelect),
+  );
+  chatForm.appendChild(chatSaveButton);
+  chatForm.appendChild(chatStatus);
+  chatCard.appendChild(chatTitle);
+  chatCard.appendChild(chatDescription);
+  chatCard.appendChild(chatForm);
+  container.appendChild(chatCard);
+
+  let defaultModelRequestId = 0;
+  const loadDefaultModels = async (
+    connectionId: number,
+    selectedModelId: string | null,
+  ): Promise<void> => {
+    const requestId = ++defaultModelRequestId;
+    defaultModelSelect.replaceChildren(createPlaceholder('Loading models...'));
+    defaultModelSelect.disabled = true;
+    try {
+      const response = await fetch(`/api/model-connections/${connectionId}/models`);
+      if (!response.ok) {
+        throw new Error('Failed to discover models');
+      }
+      const payload: unknown = await response.json();
+      if (
+        typeof payload !== 'object' ||
+        payload === null ||
+        Array.isArray(payload) ||
+        !Array.isArray((payload as Record<string, unknown>).models)
+      ) {
+        throw new Error('Invalid models response');
+      }
+      if (requestId !== defaultModelRequestId) {
+        return;
+      }
+      const models = (payload as { models: unknown[] }).models.flatMap((model): string[] => {
+        if (
+          typeof model !== 'object' ||
+          model === null ||
+          Array.isArray(model) ||
+          typeof (model as Record<string, unknown>).id !== 'string'
+        ) {
+          return [];
+        }
+        return [(model as { id: string }).id];
+      });
+      defaultModelSelect.replaceChildren(createPlaceholder('Select model'));
+      for (const model of models) {
+        const option = document.createElement('option');
+        option.value = model;
+        option.textContent = model;
+        defaultModelSelect.appendChild(option);
+      }
+      defaultModelSelect.value = selectedModelId && models.includes(selectedModelId)
+        ? selectedModelId
+        : '';
+      defaultModelSelect.disabled = false;
+    } catch {
+      if (requestId === defaultModelRequestId) {
+        defaultModelSelect.replaceChildren(createPlaceholder('Select model'));
+        defaultModelSelect.disabled = true;
+        chatStatus.textContent = 'Failed to load models.';
+        chatStatus.className = 'settings-saved-status settings-saved-status-error';
+      }
+    }
+  };
+
+  defaultConnectionSelect.addEventListener('change', () => {
+    defaultModelRequestId += 1;
+    defaultModelSelect.replaceChildren(createPlaceholder('Select model'));
+    const connectionId = Number(defaultConnectionSelect.value);
+    if (!Number.isInteger(connectionId) || connectionId <= 0) {
+      defaultModelSelect.disabled = true;
+      return;
+    }
+    void loadDefaultModels(connectionId, null);
+  });
+
+  chatForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const connectionId = Number(defaultConnectionSelect.value);
+    const defaultModelConnectionId =
+      Number.isInteger(connectionId) && connectionId > 0 ? connectionId : null;
+    const defaultModelId = defaultModelConnectionId ? defaultModelSelect.value || null : null;
+    chatSaveButton.disabled = true;
+    chatStatus.textContent = 'Saving Chat settings...';
+    void (async () => {
+      try {
+        const response = await fetch('/api/settings/chat', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            defaultModelConnectionId,
+            defaultModelId,
+            showReasoning: showReasoningInput.checked,
+            showToolCalls: showToolCallsInput.checked,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error('Failed to save Chat settings');
+        }
+        chatStatus.textContent = 'Chat settings saved.';
+        chatStatus.className = 'settings-saved-status';
+      } catch {
+        chatStatus.textContent = 'Failed to save Chat settings.';
+        chatStatus.className = 'settings-saved-status settings-saved-status-error';
+      } finally {
+        chatSaveButton.disabled = false;
+      }
+    })();
+  });
+
+  const loadChatSettings = async (): Promise<void> => {
+    try {
+      const response = await fetch('/api/settings/chat');
+      if (!response.ok) {
+        throw new Error('Failed to load Chat settings');
+      }
+      const payload: unknown = await response.json();
+      if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+        throw new Error('Invalid Chat settings response');
+      }
+      const settings = payload as Record<string, unknown>;
+      const connectionId = settings.defaultModelConnectionId;
+      const modelId = settings.defaultModelId;
+      const showReasoning = settings.showReasoning;
+      const showToolCalls = settings.showToolCalls;
+      if (
+        (connectionId !== null && (!Number.isInteger(connectionId) || Number(connectionId) <= 0)) ||
+        (modelId !== null && (typeof modelId !== 'string' || modelId.trim().length === 0)) ||
+        typeof showReasoning !== 'boolean' ||
+        typeof showToolCalls !== 'boolean'
+      ) {
+        throw new Error('Invalid Chat settings response');
+      }
+      defaultConnectionSelect.replaceChildren(createPlaceholder('Select connection'));
+      for (const connection of savedConnections.filter((item) => item.data.enabled)) {
+        const option = document.createElement('option');
+        option.value = String(connection.id);
+        option.textContent = connection.data.name;
+        defaultConnectionSelect.appendChild(option);
+      }
+      const selectedConnection = savedConnections.find(
+        (item) => item.data.enabled && item.id === connectionId,
+      );
+      defaultConnectionSelect.value = selectedConnection ? String(selectedConnection.id) : '';
+      showReasoningInput.checked = showReasoning;
+      showToolCallsInput.checked = showToolCalls;
+      if (selectedConnection) {
+        await loadDefaultModels(
+          selectedConnection.id,
+          typeof modelId === 'string' ? modelId.trim() : null,
+        );
+      }
+      chatStatus.textContent = '';
+      chatSaveButton.disabled = false;
+    } catch {
+      chatStatus.textContent = 'Failed to load Chat settings.';
+      chatStatus.className = 'settings-saved-status settings-saved-status-error';
+    }
+  };
 
   const savedConnectionsCard = document.createElement('div');
   savedConnectionsCard.className = 'settings-card';
@@ -338,6 +559,7 @@ export function createSettingsView(): HTMLElement {
     const saveButton = document.getElementById('settings-save-button') as HTMLButtonElement | null;
     const nameInput = document.getElementById('settings-name') as HTMLInputElement | null;
     const baseUrlInput = document.getElementById('settings-base-url') as HTMLInputElement | null;
+    const apiKeyInput = document.getElementById('settings-api-key') as HTMLInputElement | null;
     const timeoutInput = document.getElementById('settings-timeout') as HTMLInputElement | null;
     const modelSelect = document.getElementById('settings-model') as HTMLSelectElement | null;
     const enabledCheckbox = document.getElementById('settings-enabled') as HTMLInputElement | null;
@@ -358,6 +580,7 @@ export function createSettingsView(): HTMLElement {
 
     const name = nameInput.value.trim();
     const baseUrl = baseUrlInput.value.trim();
+    const apiKey = apiKeyInput?.value ?? '';
     const parsedTimeout = timeoutInput ? parseInt(timeoutInput.value, 10) : DEFAULT_TIMEOUT_MINUTES;
     const timeoutMinutes = isNaN(parsedTimeout) || parsedTimeout <= 0
       ? DEFAULT_TIMEOUT_MINUTES
@@ -379,7 +602,7 @@ export function createSettingsView(): HTMLElement {
         {
           method: isUpdate ? 'PUT' : 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, baseUrl, timeoutMinutes, modelId, enabled }),
+          body: JSON.stringify({ name, baseUrl, apiKey, timeoutMinutes, modelId, enabled }),
         },
       );
 
@@ -427,6 +650,7 @@ export function createSettingsView(): HTMLElement {
             savedEntry.data.timeoutMinutes = timeoutMinutes;
             savedEntry.data.modelId = modelId;
             savedEntry.data.enabled = enabled;
+            savedEntry.hasApiKey = savedEntry.hasApiKey === true || apiKey.trim().length > 0;
           }
 
           const savedOption = Array.from(savedSelect.options).find(
@@ -436,6 +660,10 @@ export function createSettingsView(): HTMLElement {
             savedOption.textContent = `${name} - ${baseUrl}`;
           }
         }
+        if (apiKeyInput) {
+          apiKeyInput.value = '';
+        }
+        connectionState.apiKey = '';
         saveButton.textContent = 'Saved';
         if (statusMessage) {
           statusMessage.textContent = isUpdate
@@ -472,6 +700,9 @@ export function createSettingsView(): HTMLElement {
     const apiKeyInput = document.getElementById('settings-api-key') as HTMLInputElement | null;
     const timeoutInput = document.getElementById('settings-timeout') as HTMLInputElement | null;
     const modelSelect = document.getElementById('settings-model') as HTMLSelectElement | null;
+    const savedSelect = document.getElementById(
+      'settings-saved-connections',
+    ) as HTMLSelectElement | null;
     const statusMessage = document.getElementById('settings-test-status');
 
     if (!testButton || !baseUrlInput) {
@@ -484,6 +715,10 @@ export function createSettingsView(): HTMLElement {
     const timeoutMinutes = isNaN(parsedTimeout) || parsedTimeout <= 0
       ? DEFAULT_TIMEOUT_MINUTES
       : parsedTimeout;
+    const selectedConnectionId = savedSelect ? Number(savedSelect.value) : NaN;
+    const connectionId = Number.isSafeInteger(selectedConnectionId) && selectedConnectionId > 0
+      ? selectedConnectionId
+      : undefined;
 
     testButton.disabled = true;
     testButton.textContent = 'Testing...';
@@ -496,7 +731,7 @@ export function createSettingsView(): HTMLElement {
       const response = await fetch('/api/model-connections/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl, apiKey, timeoutMinutes }),
+        body: JSON.stringify({ baseUrl, apiKey, timeoutMinutes, connectionId }),
       });
 
       const data = await response.json();
@@ -660,8 +895,6 @@ export function createSettingsView(): HTMLElement {
   formCard.appendChild(form);
   container.appendChild(formCard);
 
-  let savedConnections: SavedConnection[] = [];
-
   const setSavedConnectionsStatus = (message: string, isError: boolean): void => {
     savedStatus.textContent = message;
     savedStatus.className = isError
@@ -725,6 +958,7 @@ export function createSettingsView(): HTMLElement {
     if (apiKeyInput) {
       apiKeyInput.value = '';
     }
+    connectionState.apiKey = '';
     if (timeoutInput) {
       timeoutInput.value = String(data.timeoutMinutes);
     }
@@ -778,6 +1012,7 @@ export function createSettingsView(): HTMLElement {
           false,
         );
       }
+      await loadChatSettings();
     } catch {
       setSavedConnectionsStatus('Failed to load saved connections', true);
     }

@@ -12,6 +12,7 @@ A task is complete only when all applicable items below are satisfied.
 - No speculative functionality or unnecessary dependencies were added.
 - Existing architecture and project conventions are followed.
 - No unnecessary complexity, duplicated logic, dead code, or debug code remains.
+- No changed service or module has accumulated an unrelated responsibility that should be a focused collaborator.
 
 ## Validation and security
 - External input is validated where required.

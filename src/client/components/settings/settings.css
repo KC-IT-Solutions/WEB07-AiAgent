@@ -31,6 +31,10 @@
   margin-top: 0.5rem;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 .settings-form-group {
   display: flex;
   flex-direction: column;
@@ -155,7 +159,7 @@
   margin-top: 0.5rem;
 }
 
-.settings-saved-status-error {
+.settings-card .settings-saved-status-error {
   color: #721c24;
 }
 
@@ -172,4 +176,235 @@
 
 .settings-test-status-error {
   color: #721c24;
+}
+
+.settings-tools-list,
+.tool-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.settings-tool-button {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #ced4da;
+  border-radius: 0.375rem;
+  background-color: #f8f9fa;
+  color: #212529;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-tool-button:hover {
+  background-color: #e9ecef;
+}
+
+.tool-settings-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.settings-log-type {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.settings-log-type-description {
+  margin: 0 0 0 1.625rem;
+  color: #6c757d;
+  font-size: 0.875rem;
+}
+
+.settings-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #495057;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.tool-settings-form label {
+  color: #f8f9fa;
+}
+
+.tool-settings-error {
+  min-height: 1.25rem;
+  color: #ffb3ba;
+  font-size: 0.875rem;
+}
+
+.admin-model-visibility-list,
+.admin-model-visibility-form,
+.admin-model-explicit-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.admin-model-visibility-list {
+  margin-top: 0.75rem;
+}
+
+.admin-model-visibility-item {
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.375rem;
+}
+
+.admin-model-visibility-item h3 {
+  margin: 0 0 0.5rem;
+  color: #2d3748;
+  font-size: 1rem;
+}
+
+.admin-model-visibility-panel {
+  min-width: 0;
+  margin-top: 0.75rem;
+}
+
+.admin-model-checklist {
+  display: flex;
+  max-height: 16rem;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.5rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.625rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.375rem;
+}
+
+.admin-model-checklist-row {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #edf2f7;
+}
+
+.admin-model-checklist-identity {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.admin-model-checklist-row label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #495057;
+  font-size: 0.875rem;
+}
+
+.admin-model-checklist-row > label {
+  margin-bottom: -0.375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.admin-model-description {
+  width: 100%;
+  min-height: 2.25rem;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #ced4da;
+  border-radius: 0.375rem;
+  font: inherit;
+  font-size: 0.8125rem;
+}
+
+/* Log type overflow menu */
+
+.settings-log-type-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.settings-log-overflow {
+  position: relative;
+  display: inline-block;
+}
+
+.settings-log-overflow-trigger {
+  padding: 0.25rem 0.375rem;
+  background: none;
+  border: 1px solid #ced4da;
+  border-radius: 0.25rem;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  color: #495057;
+}
+
+.settings-log-overflow-trigger:hover {
+  background-color: #e9ecef;
+}
+
+.settings-log-overflow-menu-wrapper {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 10;
+  min-width: 8rem;
+  background-color: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.375rem;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  padding: 0.25rem 0;
+}
+
+.settings-log-overflow-menu-button {
+  display: block;
+  width: 100%;
+  padding: 0.375rem 0.75rem;
+  background: none;
+  border: none;
+  text-align: left;
+  font-size: 0.875rem;
+  color: #2d3748;
+  cursor: pointer;
+}
+
+.settings-log-overflow-menu-button:hover {
+  background-color: #f0f1f3;
+}
+
+/* Log viewer modal */
+
+.admin-log-viewer-backdrop .confirmation-modal {
+  width: min(85vw, 1200px);
+  max-height: 80vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-log-viewer-content {
+  height: clamp(24rem, 60vh, 48rem);
+  overflow: auto;
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  background-color: #f8f9fa;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.375rem;
+}
+
+.admin-log-viewer-text {
+  font-family: monospace;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  color: #2d3748;
 }

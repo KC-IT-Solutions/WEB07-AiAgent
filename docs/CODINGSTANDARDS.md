@@ -13,6 +13,7 @@ Follow these rules for all code changes in this project.
 * Remove dead code instead of commenting it out.
 * Comments should explain **why**, not describe obvious code.
 * Keep functions focused on one responsibility.
+* Keep services and modules cohesive as well as individual functions. If a service owns several independently testable workflows with different dependencies or rules, prefer extracting a focused collaborator rather than continuing to grow the service.
 * Prefer `const`; use `let` only when reassignment is required.
 * Avoid magic numbers and repeated magic strings. Use named constants where appropriate.
 

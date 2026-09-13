@@ -23,9 +23,11 @@ assert.ok(projectRoot, 'Project root should be found');
 
 const layoutPath = resolve(projectRoot, 'src/client/components/layout.ts');
 const chatViewPath = resolve(projectRoot, 'src/client/components/chat/ChatView.ts');
+const chatCssPath = resolve(projectRoot, 'src/client/components/chat/chat.css');
 const confirmationModalPath = resolve(projectRoot, 'src/client/components/ConfirmationModal.ts');
 const layout = readFileSync(layoutPath, 'utf-8');
 const chatView = readFileSync(chatViewPath, 'utf-8');
+const chatCss = readFileSync(chatCssPath, 'utf-8');
 const confirmationModal = readFileSync(confirmationModalPath, 'utf-8');
 
 function extractSection(startMarker: string, endMarker: string): string {
@@ -45,9 +47,110 @@ await describe('chat list UI', async () => {
   });
 
   await it('shows saved chat titles and an empty list state', () => {
-    assert.ok(layout.includes('button.textContent = chat.data.title'));
+    assert.ok(layout.includes('chatTitle.textContent = chat.data.title'));
     assert.ok(layout.includes("chatListStatus.textContent = 'No saved chats yet.'"));
   });
+
+  await it('provides an accessible Chat section toggle that starts collapsed', () => {
+    const panelSection = extractSection(
+      "const chatListPanel = document.createElement('li')",
+      "const settingsNavItem = document.createElement('li')",
+    );
+
+    assert.ok(layout.includes("chatSectionToggle.type = 'button'"));
+    assert.ok(
+      layout.includes("chatSectionToggle.setAttribute('aria-label', 'Toggle saved chats')"),
+    );
+    assert.ok(layout.includes("chatSectionToggle.setAttribute('aria-expanded', 'false')"));
+    assert.ok(panelSection.includes('chatListPanel.hidden = true'));
+    assert.ok(layout.includes('let isChatSectionExpanded = false'));
+    assert.ok(panelSection.includes('chatListPanel.appendChild(newChatButton)'));
+    assert.ok(panelSection.includes('chatListPanel.appendChild(chatList)'));
+    assert.ok(layout.includes("settingsNavLink.textContent = 'Settings'"));
+    assert.ok(layout.includes("chatSectionTogglePath.setAttribute('d', 'M6 9l6 6 6-6')"));
+    assert.ok(layout.includes("chatSectionTogglePath.setAttribute('stroke-linecap', 'round')"));
+    assert.ok(layout.includes("chatSectionTogglePath.setAttribute('stroke-linejoin', 'round')"));
+  });
+
+  await it('expands on the first toggle and collapses on the second without changing active chat', () => {
+    const toggleSection = extractSection(
+      "chatSectionToggle.addEventListener('click'",
+      "chatNavLink.addEventListener('click'",
+    );
+
+    assert.ok(layout.includes('let isChatSectionExpanded = false'));
+    assert.ok(toggleSection.includes('isChatSectionExpanded = !isChatSectionExpanded'));
+    assert.ok(
+      toggleSection.includes(
+        "chatSectionToggle.setAttribute('aria-expanded', String(isChatSectionExpanded))",
+      ),
+    );
+    assert.ok(toggleSection.includes('chatListPanel.hidden = !isChatSectionExpanded'));
+    assert.ok(!toggleSection.includes('activeChatId ='));
+    assert.ok(!toggleSection.includes('chats ='));
+    assert.ok(!toggleSection.includes('location.reload'));
+    assert.ok(chatCss.includes(".chat-section-toggle[aria-expanded='false'] svg"));
+    assert.ok(chatCss.includes('transform: rotate(-90deg)'));
+    assert.ok(chatCss.includes('.chat-list-panel[hidden]'));
+  });
+
+  await it('adds the supplied decorative chat icon before each saved chat title', () => {
+    const renderSection = extractSection('function renderChatList', 'async function loadChats');
+    const iconSection = renderSection.substring(
+      renderSection.indexOf("const chatIcon = document.createElementNS(SVG_NAMESPACE, 'svg')"),
+      renderSection.indexOf("button.type = 'button'"),
+    );
+
+    assert.ok(iconSection.includes("chatIcon.classList.add('chat-list-icon')"));
+    assert.ok(
+      iconSection.includes("'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'"),
+    );
+    assert.ok(iconSection.includes("chatIcon.setAttribute('aria-hidden', 'true')"));
+    assert.ok(iconSection.includes("chatIcon.setAttribute('focusable', 'false')"));
+    assert.ok(!iconSection.includes('addEventListener'));
+    assert.ok(
+      renderSection.indexOf('button.appendChild(chatIcon)') <
+        renderSection.indexOf('button.appendChild(chatTitle)'),
+    );
+    assert.ok(chatCss.includes('.chat-list-title {'));
+    assert.ok(chatCss.includes('text-overflow: ellipsis'));
+  });
+
+  await it(
+    'adds a decorative plus SVG before the upper New chat label without changing its action',
+    () => {
+      const buttonSection = extractSection(
+        "const newChatButton = document.createElement('button')",
+        "const chatListStatus = document.createElement('p')",
+      );
+      const clickSection = extractSection(
+        "newChatButton.addEventListener('click'",
+        "chatSectionToggle.addEventListener('click'",
+      );
+
+      assert.ok(
+        buttonSection.includes(
+          "newChatIcon = document.createElementNS(SVG_NAMESPACE, 'svg')",
+        ),
+      );
+      assert.equal(
+        buttonSection.match(/document\.createElementNS\(SVG_NAMESPACE, 'line'\)/g)?.length,
+        2,
+      );
+      assert.ok(buttonSection.includes('newChatIcon.appendChild(newChatHorizontalLine)'));
+      assert.ok(buttonSection.includes('newChatIcon.appendChild(newChatVerticalLine)'));
+assert.ok(buttonSection.includes("newChatIcon.setAttribute('aria-hidden', 'true')"));
+    assert.ok(buttonSection.includes("newChatLabel.textContent = 'New chat'"));
+    assert.ok(buttonSection.includes("newChatButton.setAttribute('title', 'Create a new chat')"));
+      assert.ok(
+        buttonSection.indexOf('newChatButton.appendChild(newChatIcon)') <
+          buttonSection.indexOf('newChatButton.appendChild(newChatLabel)'),
+      );
+      assert.ok(clickSection.includes('void createNewChat()'));
+      assert.ok(chatCss.includes('.chat-new-button svg {'));
+      assert.ok(chatCss.includes('stroke: currentColor'));
+    },
+  );
 
   await it('shows a chat list load failure state', () => {
     const loadSection = extractSection('async function loadChats', 'async function createNewChat');
@@ -61,8 +164,8 @@ await describe('chat list UI', async () => {
     assert.ok(createSection.includes("fetch('/api/chats',"));
     assert.ok(createSection.includes("method: 'POST'"));
     assert.ok(inputSection.includes("title: 'New chat'"));
-    assert.ok(inputSection.includes('modelConnectionId: null'));
-    assert.ok(inputSection.includes('modelId: null'));
+    assert.ok(!inputSection.includes('modelConnectionId'));
+    assert.ok(!inputSection.includes('modelId'));
     assert.ok(layout.includes('body: JSON.stringify(NEW_CHAT_INPUT)'));
     assert.ok(!layout.includes('userId'));
   });
@@ -71,6 +174,8 @@ await describe('chat list UI', async () => {
     const createSection = extractSection('async function createNewChat', 'renderCurrentView();');
     assert.ok(createSection.includes('chats = [createdChat, ...chats]'));
     assert.ok(createSection.includes('activeChatId = createdChat.id'));
+    assert.ok(createSection.includes("currentView = 'chat'"));
+    assert.ok(createSection.includes('setActiveNavItem(currentView, navItems)'));
     assert.ok(layout.includes("activeChat?.data.title ?? 'Chat Interface'"));
     assert.ok(!chatView.includes("headerCard.className = 'chat-card'"));
   });
@@ -78,7 +183,78 @@ await describe('chat list UI', async () => {
   await it('selects saved chats without a redundant GET-by-id request', () => {
     const renderSection = extractSection('function renderChatList', 'async function loadChats');
     assert.ok(renderSection.includes('activeChatId = chat.id'));
+    assert.ok(renderSection.includes("currentView = 'chat'"));
+    assert.ok(renderSection.includes('setActiveNavItem(currentView, navItems)'));
     assert.ok(!renderSection.includes('/api/chats'));
+  });
+
+  await it('starts with no active navigation item until an explicit click', () => {
+    const initialChatLinkSection = extractSection(
+      "const chatNavLink = document.createElement('a')",
+      "const chatSectionToggle = document.createElement('button')",
+    );
+    assert.ok(initialChatLinkSection.includes("chatNavLink.className = 'chat-sidebar-item'"));
+    assert.ok(!initialChatLinkSection.includes('chat-sidebar-item-active'));
+    assert.ok(layout.includes('let currentView: ViewName | null = null'));
+    assert.ok(!layout.includes("chatNavLink.className = 'chat-sidebar-item chat-sidebar-item-active'"));
+  });
+
+  await it('keeps the initial main area empty without mounting Chat or Settings', () => {
+    const renderSection = extractSection('function renderCurrentView', 'async function renameChat');
+    const nullViewSection = renderSection.substring(
+      renderSection.indexOf('if (currentView === null)'),
+      renderSection.indexOf('const activeChat = getActiveChat()'),
+    );
+
+    assert.ok(layout.includes("headerTitle.textContent = ''"));
+    assert.ok(layout.includes('header.hidden = true'));
+    assert.ok(nullViewSection.includes('main.replaceChildren()'));
+    assert.ok(nullViewSection.includes('return'));
+    assert.ok(!nullViewSection.includes('createChatView'));
+    assert.ok(!nullViewSection.includes('createSettingsView'));
+    assert.ok(!nullViewSection.includes('Chat Interface'));
+    assert.ok(!nullViewSection.includes('chat-message-input'));
+  });
+
+  await it('activates Chat and Settings only when clicked and switches active state normally', () => {
+    const switchSection = extractSection('function switchView', "newChatButton.addEventListener('click'");
+    const chatClickSection = extractSection(
+      "chatNavLink.addEventListener('click'",
+      "settingsNavLink.addEventListener('click'",
+    );
+    const settingsClickSection = extractSection(
+      "settingsNavLink.addEventListener('click'",
+      "document.addEventListener('keydown'",
+    );
+
+    assert.ok(chatClickSection.includes("switchView('chat')"));
+    assert.ok(settingsClickSection.includes("switchView('settings')"));
+    assert.ok(switchSection.includes('setActiveNavItem(viewName, navItems)'));
+    assert.ok(layout.includes("item.classList.add('chat-sidebar-item-active')"));
+    assert.ok(layout.includes("item.classList.remove('chat-sidebar-item-active')"));
+    assert.ok(layout.includes("currentView === 'chat'"));
+    assert.ok(layout.includes('createChatView('));
+    assert.ok(layout.includes('createSettingsView()'));
+  });
+
+  await it('loads selected chat history and clears the previous visible chat view immediately', () => {
+    const renderViewSection = extractSection('function renderCurrentView', 'async function renameChat');
+    const selectSection = extractSection('function renderChatList', 'async function loadChats');
+    assert.ok(chatView.includes('`/api/chats/${activeChat.id}/messages`'));
+    assert.ok(selectSection.includes('activeChatId = chat.id'));
+    assert.ok(selectSection.includes('renderCurrentView()'));
+    assert.ok(renderViewSection.includes('main.replaceChildren('));
+    assert.ok(chatView.includes("historyStatus.textContent = 'Loading chat history...'"));
+  });
+
+  await it('keeps history and inference race checks scoped to the active chat', () => {
+    assert.ok(layout.includes("(chatId) => currentView === 'chat' && activeChatId === chatId"));
+    assert.ok(chatView.includes('if (isActiveChat && !isActiveChat(activeChat.id))'));
+    assert.ok(chatView.includes('messageArea.replaceChildren('));
+    assert.ok(chatView.includes('scrollAnchor.before(userMessage)'));
+    assert.ok(chatView.includes('waitingMessage.before(element)'));
+    assert.ok(chatView.includes('JSON.stringify({ message: text })'));
+    assert.ok(!chatView.includes('JSON.stringify({ messages:'));
   });
 
   await it('visually identifies the active saved chat', () => {
@@ -91,13 +267,39 @@ await describe('chat list UI', async () => {
     assert.ok(createSection.includes('if (createInProgress)'));
     assert.ok(createSection.includes('newChatButton.disabled = true'));
     assert.ok(layout.includes("settingsNavLink.textContent = 'Settings'"));
+    assert.ok(
+      layout.indexOf('bottomNavList.appendChild(settingsNavItem)') >
+        layout.indexOf('upperNavList.appendChild(chatListPanel)'),
+    );
+  });
+
+  await it('keeps active navigation on the whole row without a boxed SVG area', () => {
+    const toggleStyles = chatCss.substring(
+      chatCss.indexOf('.chat-section-toggle {'),
+      chatCss.indexOf('.chat-section-toggle:hover {'),
+    );
+
+    assert.ok(layout.includes("chatNavLink.className = 'chat-sidebar-item'"));
+    assert.ok(layout.includes("item.classList.add('chat-sidebar-item-active')"));
+    assert.ok(layout.includes("settingsNavLink.className = 'chat-sidebar-item'"));
+    assert.ok(chatCss.includes('.chat-sidebar-item-active {'));
+    assert.ok(chatCss.includes('.chat-section-heading:has(.chat-sidebar-item-active)'));
+    assert.ok(toggleStyles.includes('border: 0'));
+    assert.ok(toggleStyles.includes('background: transparent'));
+    assert.ok(
+      /\.chat-section-toggle:hover\s*\{\s*background-color:\s*transparent/.test(chatCss),
+    );
+    assert.ok(chatCss.includes('.chat-sidebar-item:focus-visible {'));
+    assert.ok(chatCss.includes('.chat-section-toggle:focus-visible {'));
   });
 
   await it('loads saved model connections and only keeps enabled choices', () => {
     assert.ok(chatView.includes("fetch('/api/model-connections')"));
     assert.ok(chatView.includes('.filter((item) => item.data.enabled)'));
-    assert.ok(chatView.includes("connectionLabel.textContent = 'Model connection'"));
-    assert.ok(chatView.includes("modelLabel.textContent = 'Model'"));
+    assert.ok(!chatView.includes("connectionLabel.textContent = 'Model connection'"));
+    assert.ok(!chatView.includes("modelLabel.textContent = 'Model'"));
+    assert.ok(chatView.includes("connectionSelect.setAttribute('aria-label', 'Model connection')"));
+    assert.ok(chatView.includes("modelSelect.setAttribute('aria-label', 'Model')"));
   });
 
   await it('restores the active chat model connection and model', () => {
@@ -110,7 +312,8 @@ await describe('chat list UI', async () => {
 
   await it('discovers all models through the backend and never calls the model server directly', () => {
     assert.ok(chatView.includes('`/api/model-connections/${connection.id}/models`'));
-    assert.ok(chatView.includes('for (const modelId of modelIds)'));
+    assert.ok(chatView.includes('for (const model of models)'));
+    assert.ok(chatView.includes('parseEffectiveModels'));
     assert.ok(chatView.includes("createSelectOption('', 'Loading models...')"));
     assert.ok(chatView.includes("createSelectOption('', 'Models unavailable')"));
     assert.ok(!chatView.includes('/v1/models'));
@@ -119,7 +322,7 @@ await describe('chat list UI', async () => {
 
   await it('clears the old model when changing connection and waits for an explicit model choice', () => {
     assert.ok(chatView.includes('persistSelection(connection.id, null)'));
-    assert.ok(chatView.includes("createSelectOption('', 'Select model')"));
+    assert.ok(chatView.includes("createSelectPlaceholder('Select model')"));
     assert.ok(chatView.includes('const modelId = modelSelect.value || null'));
     assert.ok(!chatView.includes('connection?.data.modelId ?? null'));
   });
@@ -141,12 +344,13 @@ await describe('chat list UI', async () => {
 
   await it('does not update when there is no active persisted chat', () => {
     assert.ok(chatView.includes('if (!activeChat || !updateModelSelection)'));
-    assert.ok(chatView.includes("'No active chat'"));
+    assert.ok(chatView.includes("createSelectPlaceholder('Select connection')"));
+    assert.ok(chatView.includes("createSelectPlaceholder('Select model')"));
     assert.ok(chatView.includes("'Select a saved chat to choose a model.'"));
   });
 
   await it('uses the active chat id for inference and ignores late responses after switching chats', () => {
-    assert.ok(chatView.includes('sendToApi(activeChat.id, text)'));
+    assert.ok(chatView.includes('sendToApi(activeChat.id, text,'));
     assert.ok(layout.includes("(chatId) => currentView === 'chat' && activeChatId === chatId"));
     assert.ok(chatView.includes('if (isActiveChat && !isActiveChat(activeChat.id))'));
   });

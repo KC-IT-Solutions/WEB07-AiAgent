@@ -435,4 +435,86 @@ await describe('ModelConnectionRepository', () => {
   it('should return not found when deleting an unknown id', async () => {
     assert.strictEqual(await repo.delete(1, 9999), false);
   });
+
+  it('defaults legacy records to unfiltered and persists scoped explicit filters across reloads', async () => {
+    const db = createTestDb();
+    db.prepare(
+      'INSERT INTO model_connections (user_id, created_at, updated_at, data) VALUES (1, 1, 1, ?)',
+    ).run(
+      JSON.stringify({
+        name: 'Legacy',
+        baseUrl: 'http://legacy.test',
+        timeoutMinutes: 30,
+        modelId: null,
+        enabled: true,
+      }),
+    );
+    const repository = new ModelConnectionRepository(db);
+    const legacy = (await repository.listByUserId(1))[0];
+    assert.equal(legacy.data.filterConfigured, false);
+    assert.deepEqual(legacy.data.visibleModelIds, []);
+    assert.deepEqual(legacy.data.modelDescriptions, {});
+
+    const other = await repository.create(1, {
+      name: 'Other',
+      baseUrl: 'http://other.test',
+      timeoutMinutes: 30,
+      modelId: null,
+      enabled: true,
+    });
+    const credential = { ciphertext: 'cipher', iv: 'iv', authTag: 'tag' };
+    const filtered = await repository.create(
+      1,
+      {
+        name: 'Filtered',
+        baseUrl: 'http://filtered.test',
+        timeoutMinutes: 30,
+        modelId: null,
+        enabled: true,
+      },
+      credential,
+    );
+    await repository.updateModelVisibility(1, filtered.id, true, ['Model/A', 'model-b']);
+    await repository.updateModelDescriptions(1, filtered.id, {
+      'Model/A': 'Primary model',
+      'model-b': 'Secondary model',
+    });
+    await repository.updateModelDescriptions(1, other.id, { 'Model/A': 'Other connection' });
+    const reloadedRepository = new ModelConnectionRepository(db);
+    const reloaded = await reloadedRepository.getById(1, filtered.id);
+    assert.equal(reloaded?.data.filterConfigured, true);
+    assert.deepEqual(reloaded?.data.visibleModelIds, ['Model/A', 'model-b']);
+    assert.deepEqual(reloaded?.data.modelDescriptions, {
+      'Model/A': 'Primary model',
+      'model-b': 'Secondary model',
+    });
+    assert.equal((await reloadedRepository.getById(1, other.id))?.data.filterConfigured, false);
+    assert.deepEqual((await reloadedRepository.getById(1, other.id))?.data.modelDescriptions, {
+      'Model/A': 'Other connection',
+    });
+    assert.deepEqual(await reloadedRepository.getCredential(1, filtered.id), credential);
+
+    await reloadedRepository.update(1, filtered.id, {
+      name: 'Filtered renamed',
+      baseUrl: 'http://filtered.test',
+      timeoutMinutes: 15,
+      modelId: null,
+      enabled: true,
+    });
+    assert.deepEqual(
+      (await reloadedRepository.getById(1, filtered.id))?.data.visibleModelIds,
+      ['Model/A', 'model-b'],
+    );
+    assert.deepEqual(
+      (await reloadedRepository.getById(1, filtered.id))?.data.modelDescriptions,
+      { 'Model/A': 'Primary model', 'model-b': 'Secondary model' },
+    );
+    await reloadedRepository.updateModelDescriptions(1, filtered.id, {});
+    assert.deepEqual(
+      (await new ModelConnectionRepository(db).getById(1, filtered.id))?.data.modelDescriptions,
+      {},
+    );
+    assert.deepEqual(await reloadedRepository.getCredential(1, filtered.id), credential);
+    db.close();
+  });
 });

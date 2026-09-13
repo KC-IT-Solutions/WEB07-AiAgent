@@ -1,8 +1,18 @@
 import { createChatView } from './chat/ChatView.js';
 import { createConfirmationModal } from './ConfirmationModal.js';
 import { createSettingsView } from './settings/SettingsView.js';
+import { createAdminSettingsView } from './admin-settings/AdminSettingsView.js';
+import { createSkillsView } from './skills/SkillsView.js';
+import { createToolsView } from './tools/ToolsView.js';
+import {
+  createProjectsView,
+  parseProjects,
+  type ClientProject,
+} from './projects/ProjectsView.js';
 
-type ViewName = 'chat' | 'settings';
+type ViewName = 'chat' | 'projects' | 'tools' | 'settings' | 'admin-settings' | 'skills';
+
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 
 interface ClientChatData {
   title: string;
@@ -17,10 +27,8 @@ interface ClientChat {
   data: ClientChatData;
 }
 
-const NEW_CHAT_INPUT: ClientChatData = {
+const NEW_CHAT_INPUT = {
   title: 'New chat',
-  modelConnectionId: null,
-  modelId: null,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -39,8 +47,7 @@ function parseChat(value: unknown): ClientChat | null {
       Number.isInteger(data.modelConnectionId) &&
       data.modelConnectionId > 0);
   const validModelId =
-    data.modelId === null ||
-    (typeof data.modelId === 'string' && data.modelId.trim().length > 0);
+    data.modelId === null || (typeof data.modelId === 'string' && data.modelId.trim().length > 0);
 
   if (
     typeof value.id !== 'number' ||
@@ -66,8 +73,7 @@ function parseChat(value: unknown): ClientChat | null {
     updatedAt: Number(value.updatedAt),
     data: {
       title: data.title.trim(),
-      modelConnectionId:
-        data.modelConnectionId === null ? null : Number(data.modelConnectionId),
+      modelConnectionId: data.modelConnectionId === null ? null : Number(data.modelConnectionId),
       modelId: typeof data.modelId === 'string' ? data.modelId.trim() : null,
     },
   };
@@ -107,27 +113,72 @@ export function createLayout(): HTMLElement {
   sidebarHeader.appendChild(title);
   sidebar.appendChild(sidebarHeader);
 
-  const navList = document.createElement('ul');
+  const upperNavList = document.createElement('ul');
+  upperNavList.className = 'chat-sidebar-navigation';
+  upperNavList.setAttribute('aria-label', 'Primary navigation');
+
+  const bottomNavList = document.createElement('ul');
+  bottomNavList.className = 'chat-sidebar-bottom';
+  bottomNavList.setAttribute('aria-label', 'Settings navigation');
 
   const navItems = new Map<ViewName, HTMLElement>();
 
   const chatNavItem = document.createElement('li');
+  chatNavItem.className = 'chat-section-heading';
   const chatNavLink = document.createElement('a');
   chatNavLink.href = '#';
-  chatNavLink.className = 'chat-sidebar-item chat-sidebar-item-active';
+  chatNavLink.className = 'chat-sidebar-item';
   chatNavLink.textContent = 'Chat';
   chatNavLink.setAttribute('data-view', 'chat');
+  const chatSectionToggle = document.createElement('button');
+  chatSectionToggle.type = 'button';
+  chatSectionToggle.className = 'chat-section-toggle';
+  chatSectionToggle.setAttribute('aria-label', 'Toggle saved chats');
+  chatSectionToggle.setAttribute('aria-expanded', 'false');
+
+  const chatSectionToggleIcon = document.createElementNS(SVG_NAMESPACE, 'svg');
+  chatSectionToggleIcon.setAttribute('viewBox', '0 0 24 24');
+  chatSectionToggleIcon.setAttribute('aria-hidden', 'true');
+  chatSectionToggleIcon.setAttribute('focusable', 'false');
+  const chatSectionTogglePath = document.createElementNS(SVG_NAMESPACE, 'path');
+  chatSectionTogglePath.setAttribute('d', 'M6 9l6 6 6-6');
+  chatSectionTogglePath.setAttribute('stroke-linecap', 'round');
+  chatSectionTogglePath.setAttribute('stroke-linejoin', 'round');
+  chatSectionToggleIcon.appendChild(chatSectionTogglePath);
+  chatSectionToggle.appendChild(chatSectionToggleIcon);
   chatNavItem.appendChild(chatNavLink);
-  navList.appendChild(chatNavItem);
+  chatNavItem.appendChild(chatSectionToggle);
+  upperNavList.appendChild(chatNavItem);
   navItems.set('chat', chatNavLink);
 
   const chatListPanel = document.createElement('li');
   chatListPanel.className = 'chat-list-panel';
+  chatListPanel.hidden = true;
 
   const newChatButton = document.createElement('button');
   newChatButton.type = 'button';
   newChatButton.className = 'chat-new-button';
-  newChatButton.textContent = 'New chat';
+  const newChatIcon = document.createElementNS(SVG_NAMESPACE, 'svg');
+  newChatIcon.setAttribute('viewBox', '0 0 24 24');
+  newChatIcon.setAttribute('aria-hidden', 'true');
+  newChatIcon.setAttribute('focusable', 'false');
+  const newChatHorizontalLine = document.createElementNS(SVG_NAMESPACE, 'line');
+  newChatHorizontalLine.setAttribute('x1', '5');
+  newChatHorizontalLine.setAttribute('y1', '12');
+  newChatHorizontalLine.setAttribute('x2', '19');
+  newChatHorizontalLine.setAttribute('y2', '12');
+  const newChatVerticalLine = document.createElementNS(SVG_NAMESPACE, 'line');
+  newChatVerticalLine.setAttribute('x1', '12');
+  newChatVerticalLine.setAttribute('y1', '5');
+  newChatVerticalLine.setAttribute('x2', '12');
+  newChatVerticalLine.setAttribute('y2', '19');
+  newChatIcon.appendChild(newChatHorizontalLine);
+  newChatIcon.appendChild(newChatVerticalLine);
+  const newChatLabel = document.createElement('span');
+  newChatLabel.textContent = 'New chat';
+  newChatButton.appendChild(newChatIcon);
+  newChatButton.appendChild(newChatLabel);
+   newChatButton.setAttribute('title', 'Create a new chat');
   newChatButton.disabled = true;
 
   const chatListStatus = document.createElement('p');
@@ -142,7 +193,72 @@ export function createLayout(): HTMLElement {
   chatListPanel.appendChild(newChatButton);
   chatListPanel.appendChild(chatListStatus);
   chatListPanel.appendChild(chatList);
-  navList.appendChild(chatListPanel);
+  upperNavList.appendChild(chatListPanel);
+
+  const projectsNavItem = document.createElement('li');
+  projectsNavItem.className = 'chat-section-heading';
+  const projectsNavLink = document.createElement('a');
+  projectsNavLink.href = '/projects';
+  projectsNavLink.className = 'chat-sidebar-item';
+  projectsNavLink.textContent = 'Projects';
+  projectsNavLink.setAttribute('data-view', 'projects');
+  const projectsSectionToggle = document.createElement('button');
+  projectsSectionToggle.type = 'button';
+  projectsSectionToggle.className = 'chat-section-toggle';
+  projectsSectionToggle.setAttribute('aria-label', 'Toggle projects');
+  projectsSectionToggle.setAttribute('aria-expanded', 'false');
+  projectsSectionToggle.setAttribute('aria-controls', 'sidebar-project-list');
+
+  const projectsSectionToggleIcon = document.createElementNS(SVG_NAMESPACE, 'svg');
+  projectsSectionToggleIcon.setAttribute('viewBox', '0 0 24 24');
+  projectsSectionToggleIcon.setAttribute('aria-hidden', 'true');
+  projectsSectionToggleIcon.setAttribute('focusable', 'false');
+  const projectsSectionTogglePath = document.createElementNS(SVG_NAMESPACE, 'path');
+  projectsSectionTogglePath.setAttribute('d', 'M6 9l6 6 6-6');
+  projectsSectionTogglePath.setAttribute('stroke-linecap', 'round');
+  projectsSectionTogglePath.setAttribute('stroke-linejoin', 'round');
+  projectsSectionToggleIcon.appendChild(projectsSectionTogglePath);
+  projectsSectionToggle.appendChild(projectsSectionToggleIcon);
+  projectsNavItem.appendChild(projectsNavLink);
+  projectsNavItem.appendChild(projectsSectionToggle);
+  upperNavList.appendChild(projectsNavItem);
+  navItems.set('projects', projectsNavLink);
+
+  const projectsListPanel = document.createElement('li');
+  projectsListPanel.id = 'sidebar-project-list';
+  projectsListPanel.className = 'projects-sidebar-panel';
+  projectsListPanel.hidden = true;
+  const projectsListStatus = document.createElement('p');
+  projectsListStatus.className = 'projects-sidebar-status';
+  projectsListStatus.setAttribute('role', 'status');
+  projectsListStatus.textContent = 'Loading projects...';
+  const projectsList = document.createElement('ul');
+  projectsList.className = 'projects-sidebar-list';
+  projectsList.setAttribute('aria-label', 'Projects');
+  projectsListPanel.appendChild(projectsListStatus);
+  projectsListPanel.appendChild(projectsList);
+  upperNavList.appendChild(projectsListPanel);
+
+  const toolsNavItem = document.createElement('li');
+  const toolsNavLink = document.createElement('a');
+  toolsNavLink.href = '/tools';
+  toolsNavLink.className = 'chat-sidebar-item';
+  toolsNavLink.textContent = 'Tools';
+  toolsNavLink.setAttribute('data-view', 'tools');
+  toolsNavItem.appendChild(toolsNavLink);
+  upperNavList.appendChild(toolsNavItem);
+  navItems.set('tools', toolsNavLink);
+
+  const skillsNavItem = document.createElement('li');
+  skillsNavItem.hidden = true;
+  const skillsNavLink = document.createElement('a');
+  skillsNavLink.href = '#';
+  skillsNavLink.className = 'chat-sidebar-item';
+  skillsNavLink.textContent = 'Skills';
+  skillsNavLink.setAttribute('data-view', 'skills');
+  skillsNavItem.appendChild(skillsNavLink);
+  upperNavList.appendChild(skillsNavItem);
+  navItems.set('skills', skillsNavLink);
 
   const settingsNavItem = document.createElement('li');
   const settingsNavLink = document.createElement('a');
@@ -151,10 +267,22 @@ export function createLayout(): HTMLElement {
   settingsNavLink.textContent = 'Settings';
   settingsNavLink.setAttribute('data-view', 'settings');
   settingsNavItem.appendChild(settingsNavLink);
-  navList.appendChild(settingsNavItem);
+  bottomNavList.appendChild(settingsNavItem);
   navItems.set('settings', settingsNavLink);
 
-  sidebar.appendChild(navList);
+  const adminSettingsNavItem = document.createElement('li');
+  adminSettingsNavItem.hidden = true;
+  const adminSettingsNavLink = document.createElement('a');
+  adminSettingsNavLink.href = '#';
+  adminSettingsNavLink.className = 'chat-sidebar-item';
+  adminSettingsNavLink.textContent = 'Admin Settings';
+  adminSettingsNavLink.setAttribute('data-view', 'admin-settings');
+  adminSettingsNavItem.appendChild(adminSettingsNavLink);
+  bottomNavList.appendChild(adminSettingsNavItem);
+  navItems.set('admin-settings', adminSettingsNavLink);
+
+  sidebar.appendChild(upperNavList);
+  sidebar.appendChild(bottomNavList);
 
   const mainWrapper = document.createElement('div');
   mainWrapper.className = 'chat-main-wrapper';
@@ -163,8 +291,9 @@ export function createLayout(): HTMLElement {
   header.className = 'chat-main-header';
 
   const headerTitle = document.createElement('h2');
-  headerTitle.textContent = 'Chat Interface';
+  headerTitle.textContent = '';
   header.appendChild(headerTitle);
+  header.hidden = true;
   mainWrapper.appendChild(header);
 
   const main = document.createElement('main');
@@ -174,13 +303,28 @@ export function createLayout(): HTMLElement {
   container.appendChild(sidebar);
   container.appendChild(mainWrapper);
 
-  let currentView: ViewName = 'chat';
+  let currentView: ViewName | null = null;
   let chats: ClientChat[] = [];
   let activeChatId: number | null = null;
   let openChatActionsId: number | null = null;
   let renamingChatId: number | null = null;
   let renameSaveInProgressId: number | null = null;
   let createInProgress = false;
+  let isChatSectionExpanded = false;
+  let projects: ClientProject[] = [];
+  let activeProjectId: number | null = null;
+  let isProjectsSectionExpanded = false;
+  let projectsLoadState: 'loading' | 'loaded' | 'error' = 'loading';
+
+  function updateProjectState(
+    updatedProjects: readonly ClientProject[],
+    selectedProjectId: number | null,
+  ): void {
+    projects = [...updatedProjects];
+    activeProjectId = selectedProjectId;
+    projectsLoadState = 'loaded';
+    renderProjectsList();
+  }
 
   function getActiveChat(): ClientChat | null {
     return chats.find((chat) => chat.id === activeChatId) ?? null;
@@ -219,18 +363,48 @@ export function createLayout(): HTMLElement {
   }
 
   function renderCurrentView(): void {
+    if (currentView === null) {
+      header.hidden = true;
+      headerTitle.textContent = '';
+      main.replaceChildren();
+      return;
+    }
+
     const activeChat = getActiveChat();
-    main.replaceChildren(
-      currentView === 'chat'
+    header.hidden = false;
+    const view =
+       currentView === 'chat'
         ? createChatView(
             activeChat ?? undefined,
             updateActiveChatModelSelection,
             (chatId) => currentView === 'chat' && activeChatId === chatId,
-          )
-        : createSettingsView(),
-    );
+             createNewChat,
+           )
+        : currentView === 'projects'
+          ? createProjectsView({
+              selectedProjectId: activeProjectId,
+              onStateChange: updateProjectState,
+            })
+          : currentView === 'settings'
+            ? createSettingsView()
+            : currentView === 'tools'
+              ? createToolsView()
+              : currentView === 'admin-settings'
+                ? createAdminSettingsView()
+                : createSkillsView();
+    main.replaceChildren(view);
     headerTitle.textContent =
-      currentView === 'chat' ? (activeChat?.data.title ?? 'Chat Interface') : 'Settings';
+      currentView === 'projects'
+        ? 'Projects'
+        : currentView === 'settings'
+          ? 'Settings'
+          : currentView === 'tools'
+            ? 'Tools'
+            : currentView === 'admin-settings'
+              ? 'Admin Settings'
+              : currentView === 'skills'
+                ? 'Skills'
+                : (activeChat?.data.title ?? 'Chat Interface');
   }
 
   async function renameChat(chat: ClientChat, renamedTitle: string): Promise<void> {
@@ -278,9 +452,7 @@ export function createLayout(): HTMLElement {
     renamingChatId = chat.id;
     renderChatList();
 
-    const input = chatList.querySelector<HTMLInputElement>(
-      `[data-chat-rename-id="${chat.id}"]`,
-    );
+    const input = chatList.querySelector<HTMLInputElement>(`[data-chat-rename-id="${chat.id}"]`);
     input?.focus();
     input?.select();
   }
@@ -288,9 +460,7 @@ export function createLayout(): HTMLElement {
   function cancelRenameChat(chatId: number): void {
     renamingChatId = null;
     renderChatList();
-    chatList
-      .querySelector<HTMLButtonElement>(`[data-chat-actions-id="${chatId}"]`)
-      ?.focus();
+    chatList.querySelector<HTMLButtonElement>(`[data-chat-actions-id="${chatId}"]`)?.focus();
   }
 
   async function deleteChat(chat: ClientChat): Promise<void> {
@@ -401,18 +571,35 @@ export function createLayout(): HTMLElement {
 
         item.appendChild(input);
       } else {
+        const chatIcon = document.createElementNS(SVG_NAMESPACE, 'svg');
+        chatIcon.classList.add('chat-list-icon');
+        chatIcon.setAttribute('viewBox', '0 0 24 24');
+        chatIcon.setAttribute('aria-hidden', 'true');
+        chatIcon.setAttribute('focusable', 'false');
+        const chatIconPath = document.createElementNS(SVG_NAMESPACE, 'path');
+        chatIconPath.setAttribute(
+          'd',
+          'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
+        );
+        chatIcon.appendChild(chatIconPath);
+        const chatTitle = document.createElement('span');
+        chatTitle.className = 'chat-list-title';
+        chatTitle.textContent = chat.data.title;
+
         button.type = 'button';
         button.className = isActive
           ? 'chat-list-button chat-list-button-active'
           : 'chat-list-button';
-        button.textContent = chat.data.title;
         button.setAttribute('aria-pressed', String(isActive));
+        button.appendChild(chatIcon);
+        button.appendChild(chatTitle);
         button.addEventListener('click', () => {
           openChatActionsId = null;
           activeChatId = chat.id;
           currentView = 'chat';
           setActiveNavItem(currentView, navItems);
           renderChatList();
+          renderProjectsList();
           renderCurrentView();
         });
         item.appendChild(button);
@@ -496,13 +683,70 @@ export function createLayout(): HTMLElement {
     }
   }
 
-  async function createNewChat(): Promise<void> {
-    if (createInProgress) {
+  function renderProjectsList(): void {
+    projectsList.replaceChildren();
+    projectsListStatus.setAttribute('role', projectsLoadState === 'error' ? 'alert' : 'status');
+
+    if (projectsLoadState === 'loading') {
+      projectsListStatus.textContent = 'Loading projects...';
       return;
     }
 
+    if (projectsLoadState === 'error') {
+      projectsListStatus.textContent = 'Projects unavailable.';
+      return;
+    }
+
+    if (projects.length === 0) {
+      projectsListStatus.textContent = 'No projects';
+      return;
+    }
+
+    projectsListStatus.textContent = '';
+    for (const project of projects) {
+      const item = document.createElement('li');
+      const button = document.createElement('button');
+      const isActive = currentView === 'projects' && activeProjectId === project.id;
+      button.type = 'button';
+      button.className = isActive
+        ? 'projects-sidebar-button projects-sidebar-button-active'
+        : 'projects-sidebar-button';
+      button.textContent = project.name;
+      button.setAttribute('aria-pressed', String(isActive));
+      button.addEventListener('click', () => {
+        activeProjectId = project.id;
+        renderProjectsList();
+        switchView('projects', true);
+      });
+      item.appendChild(button);
+      projectsList.appendChild(item);
+    }
+  }
+
+  async function loadProjects(): Promise<void> {
+    try {
+      const response = await fetch('/api/projects');
+      const loaded = response.ok ? parseProjects(await response.json()) : null;
+      if (!loaded) {
+        throw new Error('Invalid projects response');
+      }
+      projects = loaded;
+      projectsLoadState = 'loaded';
+    } catch {
+      projects = [];
+      projectsLoadState = 'error';
+    }
+    renderProjectsList();
+  }
+
+  async function createNewChat(): Promise<boolean> {
+    if (createInProgress) {
+      return false;
+    }
+
     createInProgress = true;
-    newChatButton.disabled = true;
+newChatButton.setAttribute('title', 'Create a new chat');
+newChatButton.disabled = true;
 
     try {
       const response = await fetch('/api/chats', {
@@ -527,10 +771,13 @@ export function createLayout(): HTMLElement {
       chatListStatus.setAttribute('role', 'status');
       setActiveNavItem(currentView, navItems);
       renderChatList();
+      renderProjectsList();
       renderCurrentView();
+      return true;
     } catch {
       chatListStatus.setAttribute('role', 'alert');
       chatListStatus.textContent = 'Failed to create chat.';
+      return false;
     } finally {
       createInProgress = false;
       newChatButton.disabled = false;
@@ -539,15 +786,17 @@ export function createLayout(): HTMLElement {
 
   renderCurrentView();
   void loadChats();
+  void loadProjects();
 
-  function switchView(viewName: ViewName): void {
-    if (viewName === currentView) {
+  function switchView(viewName: ViewName, forceRender = false): void {
+    if (viewName === currentView && !forceRender) {
       return;
     }
 
     currentView = viewName;
 
     setActiveNavItem(viewName, navItems);
+    renderProjectsList();
     renderCurrentView();
   }
 
@@ -555,15 +804,82 @@ export function createLayout(): HTMLElement {
     void createNewChat();
   });
 
+  chatSectionToggle.addEventListener('click', () => {
+    isChatSectionExpanded = !isChatSectionExpanded;
+    chatSectionToggle.setAttribute('aria-expanded', String(isChatSectionExpanded));
+    chatListPanel.hidden = !isChatSectionExpanded;
+  });
+
+  projectsSectionToggle.addEventListener('click', () => {
+    isProjectsSectionExpanded = !isProjectsSectionExpanded;
+    projectsSectionToggle.setAttribute('aria-expanded', String(isProjectsSectionExpanded));
+    projectsListPanel.hidden = !isProjectsSectionExpanded;
+  });
+
   chatNavLink.addEventListener('click', (event: Event) => {
     event.preventDefault();
     switchView('chat');
+  });
+
+  projectsNavLink.addEventListener('click', (event: Event) => {
+    event.preventDefault();
+    activeProjectId = null;
+    switchView('projects', true);
+  });
+
+  toolsNavLink.addEventListener('click', (event: Event) => {
+    event.preventDefault();
+    window.history.pushState({}, '', '/tools');
+    switchView('tools');
   });
 
   settingsNavLink.addEventListener('click', (event: Event) => {
     event.preventDefault();
     switchView('settings');
   });
+
+  adminSettingsNavLink.addEventListener('click', (event: Event) => {
+    event.preventDefault();
+    if (!adminSettingsNavItem.hidden) {
+      switchView('admin-settings');
+    }
+  });
+
+  skillsNavLink.addEventListener('click', (event: Event) => {
+    event.preventDefault();
+    if (!skillsNavItem.hidden) {
+      switchView('skills');
+    }
+  });
+
+  window.addEventListener('popstate', () => {
+    if (window.location.pathname === '/tools') {
+      switchView('tools');
+    }
+  });
+
+  if (window.location.pathname === '/tools') {
+    switchView('tools');
+  }
+
+  void (async () => {
+    try {
+      const response = await fetch('/api/me');
+      const capabilities: unknown = response.ok ? await response.json() : null;
+      if (
+        typeof capabilities === 'object' &&
+        capabilities !== null &&
+        !Array.isArray(capabilities) &&
+        (capabilities as Record<string, unknown>).isAdmin === true
+      ) {
+        adminSettingsNavItem.hidden = false;
+        skillsNavItem.hidden = false;
+      }
+    } catch {
+      adminSettingsNavItem.hidden = true;
+      skillsNavItem.hidden = true;
+    }
+  })();
 
   document.addEventListener('keydown', (event: KeyboardEvent) => {
     if (event.key !== 'Escape' || openChatActionsId === null) {
@@ -573,9 +889,7 @@ export function createLayout(): HTMLElement {
     const closedChatId = openChatActionsId;
     openChatActionsId = null;
     renderChatList();
-    chatList
-      .querySelector<HTMLButtonElement>(`[data-chat-actions-id="${closedChatId}"]`)
-      ?.focus();
+    chatList.querySelector<HTMLButtonElement>(`[data-chat-actions-id="${closedChatId}"]`)?.focus();
   });
 
   document.addEventListener('click', (event: MouseEvent) => {

@@ -1,12 +1,14 @@
 export interface ConfirmationModalOptions {
   title: string;
   message: string;
+  content?: HTMLElement;
   confirmLabel: string;
-  cancelLabel: string;
+  cancelLabel?: string;
   destructive?: boolean;
   returnFocusTo?: HTMLElement;
   onConfirm: () => void | Promise<void>;
-  onCancel: () => void;
+  canCloseAfterConfirm?: () => boolean;
+  onCancel?: () => void | Promise<void>;
 }
 
 let confirmationModalId = 0;
@@ -18,10 +20,10 @@ export function createConfirmationModal(options: ConfirmationModalOptions): HTML
   const title = document.createElement('h2');
   const message = document.createElement('p');
   const actions = document.createElement('div');
-  const cancelButton = document.createElement('button');
   const confirmButton = document.createElement('button');
   const returnFocusTo = options.returnFocusTo ?? document.activeElement;
   let confirmationInProgress = false;
+  let cancelButton: HTMLButtonElement | undefined;
 
   backdrop.className = 'confirmation-modal-backdrop';
   dialog.className = 'confirmation-modal';
@@ -38,37 +40,42 @@ export function createConfirmationModal(options: ConfirmationModalOptions): HTML
 
   actions.className = 'confirmation-modal-actions';
 
-  cancelButton.type = 'button';
-  cancelButton.className = 'confirmation-modal-button confirmation-modal-cancel';
-  cancelButton.textContent = options.cancelLabel;
-
   confirmButton.type = 'button';
   confirmButton.className = options.destructive
     ? 'confirmation-modal-button confirmation-modal-confirm confirmation-modal-confirm-destructive'
     : 'confirmation-modal-button confirmation-modal-confirm';
   confirmButton.textContent = options.confirmLabel;
 
-  function close(cancelled: boolean): void {
+  function close(): void {
     document.removeEventListener('keydown', handleKeydown);
     backdrop.remove();
-    if (cancelled) {
-      options.onCancel();
-    }
+
     if (returnFocusTo instanceof HTMLElement && returnFocusTo.isConnected) {
       returnFocusTo.focus();
     }
   }
 
-  function cancel(): void {
-    if (!confirmationInProgress) {
-      close(true);
+  async function cancel(): Promise<void> {
+    if (options.onCancel) {
+      await options.onCancel();
     }
+
+    close();
+  }
+
+  if (options.cancelLabel) {
+    cancelButton = document.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.className = 'confirmation-modal-button confirmation-modal-cancel';
+    cancelButton.textContent = options.cancelLabel;
+    cancelButton.addEventListener('click', cancel);
+    actions.appendChild(cancelButton);
   }
 
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
       event.preventDefault();
-      cancel();
+      void cancel();
     }
   }
 
@@ -78,38 +85,60 @@ export function createConfirmationModal(options: ConfirmationModalOptions): HTML
     }
 
     confirmationInProgress = true;
-    cancelButton.disabled = true;
+    if (cancelButton) cancelButton.disabled = true;
     confirmButton.disabled = true;
 
     try {
       await options.onConfirm();
-      close(false);
+      if (!options.canCloseAfterConfirm || options.canCloseAfterConfirm()) {
+        close();
+      }
+    } catch {
+      close();
     } finally {
       confirmationInProgress = false;
-      cancelButton.disabled = false;
+      if (cancelButton) cancelButton.disabled = false;
       confirmButton.disabled = false;
     }
   }
 
-  cancelButton.addEventListener('click', cancel);
-  confirmButton.addEventListener('click', () => void confirm());
+  confirmButton.addEventListener('click', () => {
+    void confirm();
+  });
+
   backdrop.addEventListener('click', (event) => {
     if (event.target === backdrop) {
-      cancel();
+      void cancel();
     }
   });
+
   document.addEventListener('keydown', handleKeydown);
 
-  actions.appendChild(cancelButton);
   actions.appendChild(confirmButton);
   dialog.appendChild(title);
-  dialog.appendChild(message);
+
+  if (options.message) {
+    dialog.appendChild(message);
+  }
+
+  if (options.content) {
+    dialog.appendChild(options.content);
+  }
+
   dialog.appendChild(actions);
   backdrop.appendChild(dialog);
 
   queueMicrotask(() => {
-    if (cancelButton.isConnected) {
-      cancelButton.focus();
+    if (dialog.isConnected) {
+      const firstField = options.content?.querySelector<HTMLElement>('input, select, textarea');
+
+      if (firstField) {
+        firstField.focus();
+      } else if (cancelButton) {
+        cancelButton.focus();
+      } else {
+        confirmButton.focus();
+      }
     }
   });
 

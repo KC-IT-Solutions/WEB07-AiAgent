@@ -1,0 +1,18 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "qwen3.6-27b-i1",
+  "provider": {
+    "lmstudio": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LM Studio",
+      "options": {
+        "baseURL": "http://127.0.0.1:1234/v1"
+      },
+      "models": {
+        "qwen3.6-27b-i1": {
+          "name": "qwen3.6-27b-i1"
+        }
+      }
+    }
+  }
+}

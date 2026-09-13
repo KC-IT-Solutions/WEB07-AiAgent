@@ -12,6 +12,8 @@ logs/
 data/database/*
 !data/database/.gitkeep
 data/general-chat/
+data/chat-history/
+data/skills/
 data/projects/*
 !data/projects/.gitkeep
 coverage/

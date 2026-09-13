@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -21,6 +22,10 @@ function findProjectRoot(startDir: string): string | null {
 
 const projectRoot = findProjectRoot(__dirname);
 assert.ok(projectRoot, 'Project root should be found');
+const testRoot = mkdtempSync(`${tmpdir()}web07-chat-api-`);
+process.env.DB_PATH = resolve(testRoot, 'test.db');
+process.env.CHAT_HISTORY_PATH = resolve(testRoot, 'history');
+process.env.LOG_DIRECTORY = resolve(testRoot, 'logs');
 
 const BASE_URL = 'http://localhost:3999';
 

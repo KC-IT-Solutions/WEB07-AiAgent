@@ -1,0 +1,117 @@
+Du är en erfaren frontend- och spelutvecklare. Din uppgift är att skapa ett komplett, spelbart webbläsarspel med **endast HTML, CSS och vanilla JavaScript**.
+
+## Tekniska krav
+
+* Hela spelet ska finnas i **exakt en enda `.html`-fil**.
+* CSS ska ligga i en `<style>`-tagg i samma fil.
+* JavaScript ska ligga i en `<script>`-tagg i samma fil.
+* Använd **inga externa bibliotek, ramverk eller paket**.
+* Använd inte React, Vue, Phaser, Three.js, jQuery eller liknande.
+* Ingen npm, build process eller server får krävas.
+* Spelet ska fungera genom att användaren öppnar HTML-filen direkt i en modern webbläsare.
+* Använd inga externa bilder, fonter, ljudfiler eller andra resurser. All grafik ska skapas med CSS, HTML, Canvas, SVG eller JavaScript direkt i filen.
+* Om ljud används ska det genereras programmatiskt, exempelvis med Web Audio API.
+
+
+## Kontroller
+
+Spelet ska gå att spela med tangentbord.
+
+Använd lämpliga tangenter, exempelvis:
+
+* WASD
+* piltangenter
+* Space
+
+Kontrollerna får inte orsaka att webbsidan scrollar medan spelet spelas.
+
+## Grafik och UI
+
+Skapa en sammanhängande visuell stil.
+
+UI:t ska minst visa:
+
+* aktuell poäng
+* high score
+* relevant status, exempelvis liv, level eller multiplikator
+* startskärm
+* game-over-skärm
+* restart-knapp
+
+Prioritera:
+
+* tydlig visuell hierarki
+* bra kontrast
+* responsiva animationer
+* polish
+* rena menyer
+* tydlig feedback när spelaren träffar något, får poäng eller förlorar
+
+Spelet ska anpassa sig till olika skärmstorlekar och fungera på både desktop och mindre skärmar.
+
+## Kodkvalitet
+
+Koden ska vara strukturerad trots att allt ligger i en HTML-fil.
+
+Använd exempelvis separata funktioner eller klasser för:
+
+* game state
+* player
+* enemies
+* input
+* collision detection
+* spawning
+* scoring
+* rendering
+* effects
+* restart/reset
+
+Undvik onödigt globala variabler.
+
+Använd `requestAnimationFrame` för game loop om spelet är realtidsbaserat.
+
+Gameplay ska helst vara delta-time-baserad så att spelets hastighet inte förändras kraftigt beroende på skärmens refresh rate.
+
+Hantera resize korrekt.
+
+## Robusthet
+
+Kontrollera särskilt att:
+
+* spelet kan startas flera gånger
+* restart återställer rätt variabler
+* objekt inte fortsätter existera efter game over
+* event listeners inte registreras flera gånger
+* poäng inte fortsätter öka efter game over
+* collision detection fungerar pålitligt
+* high score faktiskt sparas och laddas
+* spelet inte kraschar om `localStorage` är otillgängligt
+* Canvas eller spelområdet skalas korrekt på HiDPI/Retina-skärmar om Canvas används
+
+## Slutlig kvalitetskontroll
+
+Innan du lämnar svaret ska du själv granska implementationen och rätta uppenbara problem.
+
+Verifiera mentalt följande flöde:
+
+**Öppna fil → startskärm → starta → spela → få poäng → svårighetsgrad ökar → game over → high score uppdateras → restart → spela igen.**
+
+## Svarsformat
+
+Returnera **endast den kompletta HTML-koden**.
+
+Börja direkt med:
+
+```html
+<!DOCTYPE html>
+```
+
+och avsluta med:
+
+```html
+</html>
+```
+
+Skriv ingen introduktion, förklaring eller text utanför HTML-koden.
+
+Resultatet ska vara en enda fristående HTML-fil.

@@ -21,6 +21,16 @@ copy(
   'dist/client/components/settings/settings.css'
 );
 
+copy(
+  'src/client/components/skills/skills.css',
+  'dist/client/components/skills/skills.css'
+);
+
+copy(
+  'src/client/components/projects/projects.css',
+  'dist/client/components/projects/projects.css'
+);
+
 copy('node_modules/marked/lib/marked.esm.js', 'dist/client/vendor/marked.esm.js');
 
 console.log('Client static assets copied.');

@@ -1,8 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { createTestDatabase } from '../../src/server/database.js';
 import { ModelConnectionRepository } from '../../src/server/repositories/model-connection-repository.js';
-import { ModelConnectionService } from '../../src/server/services/model-connection-service.js';
+import {
+  ModelConnectionService,
+  ModelDescriptionError,
+  ModelVisibilityError,
+} from '../../src/server/services/model-connection-service.js';
 
 function createService() {
   const db = createTestDatabase();
@@ -221,6 +226,185 @@ await describe('ModelConnectionService', () => {
     assert.strictEqual(await service.deleteConnection(otherConnection.id), false);
     assert.strictEqual(await repository.getById(1, ownConnection.id), null);
     assert.ok(await repository.getById(2, otherConnection.id));
+
+    db.close();
+  });
+
+  it('applies exact per-connection visibility semantics and validates explicit writes', async (t) => {
+    let providerModels = ['model-b', 'Model/A', 'model-b', ' exact/model ', '', '   '];
+    let providerUnavailable = false;
+    let discoveryRequests = 0;
+    const provider = createServer((_request, response) => {
+      discoveryRequests += 1;
+      if (providerUnavailable) {
+        response.writeHead(503);
+        response.end();
+        return;
+      }
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ data: providerModels.map((id) => ({ id })) }));
+    });
+    await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise<void>((resolve) => provider.close(() => resolve())));
+    const address = provider.address();
+    assert.ok(address && typeof address !== 'string');
+    const { db, service } = createService();
+    const first = await service.createConnection({
+      ...BASE_INPUT,
+      baseUrl: `http://127.0.0.1:${address.port}`,
+    });
+    const second = await service.createConnection({
+      ...BASE_INPUT,
+      name: 'Second',
+      baseUrl: `http://127.0.0.1:${address.port}`,
+    });
+
+    assert.deepEqual(await service.updateModelDescriptions(first.id, {
+      modelDescriptions: {
+        'Model/A': '  Primary coding model  ',
+        'model-b': 'Secondary model',
+      },
+    }), {
+      connectionId: first.id,
+      modelDescriptions: {
+        'Model/A': 'Primary coding model',
+        'model-b': 'Secondary model',
+      },
+    });
+    assert.deepEqual(await service.updateModelDescriptions(second.id, {
+      modelDescriptions: { 'Model/A': 'Independent description' },
+    }), {
+      connectionId: second.id,
+      modelDescriptions: { 'Model/A': 'Independent description' },
+    });
+    assert.deepEqual(await service.discoverEffectiveModels(first.id), [
+      { id: ' exact/model ', description: null },
+      { id: 'model-b', description: 'Secondary model' },
+      { id: 'Model/A', description: 'Primary coding model' },
+    ]);
+
+    assert.deepEqual(await service.discoverModels(first.id), [
+      ' exact/model ',
+      'model-b',
+      'Model/A',
+    ]);
+    assert.deepEqual(await service.updateModelVisibility(first.id, {
+      filterConfigured: true,
+      visibleModelIds: [' exact/model '],
+    }), {
+      connectionId: first.id,
+      filterConfigured: true,
+      visibleModelIds: [' exact/model '],
+    });
+    assert.equal(await service.isModelVisible(first.id, ' exact/model '), true);
+    assert.equal(await service.isModelVisible(first.id, 'exact/model'), false);
+    assert.deepEqual(await service.updateModelVisibility(first.id, {
+      filterConfigured: true,
+      visibleModelIds: ['Model/A'],
+    }), {
+      connectionId: first.id,
+      filterConfigured: true,
+      visibleModelIds: ['Model/A'],
+    });
+    assert.deepEqual(await service.discoverModels(first.id), ['Model/A']);
+    assert.deepEqual(await service.discoverEffectiveModels(first.id), [
+      { id: 'Model/A', description: 'Primary coding model' },
+    ]);
+    assert.deepEqual(await service.discoverModels(second.id), [
+      ' exact/model ',
+      'model-b',
+      'Model/A',
+    ]);
+
+    providerUnavailable = true;
+    const requestCount = discoveryRequests;
+    assert.equal(await service.isModelVisible(first.id, 'hidden-model'), false);
+    assert.equal(discoveryRequests, requestCount);
+    await assert.rejects(service.isModelVisible(first.id, 'Model/A'), /Model discovery failed/);
+    providerUnavailable = false;
+
+    providerModels = ['model-b', 'Model/A', 'new-model'];
+    assert.deepEqual(await service.discoverModels(first.id), ['Model/A']);
+    assert.deepEqual(await service.discoverModels(second.id), ['model-b', 'Model/A', 'new-model']);
+    assert.deepEqual((await service.getConnectionById(first.id))?.data.modelDescriptions, {
+      'Model/A': 'Primary coding model',
+      'model-b': 'Secondary model',
+    });
+    await assert.rejects(
+      service.updateModelDescriptions(first.id, {
+        modelDescriptions: { 'Model/A': 'x'.repeat(501) },
+      }),
+      (error: unknown) => error instanceof ModelDescriptionError && error.code === 'INVALID_INPUT',
+    );
+    await assert.rejects(
+      service.updateModelDescriptions(first.id, {
+        modelDescriptions: { 'never-reported': 'Injected' },
+      }),
+      (error: unknown) =>
+        error instanceof ModelDescriptionError && error.code === 'MODEL_NOT_AVAILABLE',
+    );
+    await assert.rejects(
+      service.updateModelVisibility(first.id, {
+        filterConfigured: true,
+        visibleModelIds: ['Model/A', 'Model/A'],
+      }),
+      (error: unknown) => error instanceof ModelVisibilityError && error.code === 'INVALID_INPUT',
+    );
+    await assert.rejects(
+      service.updateModelVisibility(first.id, {
+        filterConfigured: true,
+        visibleModelIds: ['never-reported'],
+      }),
+      (error: unknown) =>
+        error instanceof ModelVisibilityError && error.code === 'MODEL_NOT_AVAILABLE',
+    );
+
+    providerModels = [];
+    assert.deepEqual(await service.discoverModels(first.id), []);
+    assert.deepEqual(await service.updateModelVisibility(first.id, {
+      filterConfigured: true,
+      visibleModelIds: ['Model/A'],
+    }), {
+      connectionId: first.id,
+      filterConfigured: true,
+      visibleModelIds: ['Model/A'],
+    });
+    assert.deepEqual(await service.getModelVisibility(first.id), {
+      connectionId: first.id,
+      filterConfigured: true,
+      visibleModelIds: ['Model/A'],
+      discoveredModels: [],
+      modelDescriptions: {
+        'Model/A': 'Primary coding model',
+        'model-b': 'Secondary model',
+      },
+    });
+    providerModels = ['Model/A'];
+    assert.deepEqual(await service.discoverEffectiveModels(first.id), [
+      { id: 'Model/A', description: 'Primary coding model' },
+    ]);
+    providerModels = [];
+    assert.deepEqual(await service.updateModelDescriptions(first.id, {
+      modelDescriptions: { 'Model/A': '   ', 'model-b': '' },
+    }), { connectionId: first.id, modelDescriptions: {} });
+    assert.deepEqual((await service.getConnectionById(first.id))?.data.visibleModelIds, ['Model/A']);
+    assert.deepEqual(await service.updateModelVisibility(first.id, {
+      filterConfigured: true,
+      visibleModelIds: [],
+    }), {
+      connectionId: first.id,
+      filterConfigured: true,
+      visibleModelIds: [],
+    });
+    assert.deepEqual(await service.discoverModels(first.id), []);
+    assert.deepEqual(await service.updateModelVisibility(first.id, {
+      filterConfigured: false,
+      visibleModelIds: [],
+    }), {
+      connectionId: first.id,
+      filterConfigured: false,
+      visibleModelIds: [],
+    });
 
     db.close();
   });

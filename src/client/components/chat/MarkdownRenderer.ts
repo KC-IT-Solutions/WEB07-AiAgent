@@ -1,4 +1,4 @@
-import { lexer, type Token } from 'marked';
+import { lexer, type Token, type Tokens } from 'marked';
 
 export type MarkdownNode =
   | { type: 'text'; text: string }
@@ -7,6 +7,9 @@ export type MarkdownNode =
   | { type: 'strong' | 'emphasis' | 'inlineCode'; children: MarkdownNode[] }
   | { type: 'list'; ordered: boolean; start?: number; children: MarkdownNode[] }
   | { type: 'listItem' | 'blockquote'; children: MarkdownNode[] }
+  | { type: 'table'; header: MarkdownNode; rows: MarkdownNode[] }
+  | { type: 'tableRow'; children: MarkdownNode[] }
+  | { type: 'tableCell'; header: boolean; children: MarkdownNode[] }
   | { type: 'codeBlock'; text: string; language?: string }
   | { type: 'link'; href: string | null; children: MarkdownNode[] }
   | { type: 'lineBreak' };
@@ -104,6 +107,29 @@ function parseBlockTokens(tokens: Token[]): MarkdownNode[] {
           children: token.tokens ? parseBlockTokens(token.tokens) : [textNode(token.text)],
         });
         break;
+      case 'table': {
+        const table = token as Tokens.Table;
+        nodes.push({
+          type: 'table',
+          header: {
+            type: 'tableRow',
+            children: table.header.map((cell) => ({
+              type: 'tableCell',
+              header: true,
+              children: parseInlineContent(cell.tokens, cell.text),
+            })),
+          },
+          rows: table.rows.map((row) => ({
+            type: 'tableRow',
+            children: row.map((cell) => ({
+              type: 'tableCell',
+              header: false,
+              children: parseInlineContent(cell.tokens, cell.text),
+            })),
+          })),
+        });
+        break;
+      }
       case 'code': {
         const language = token.lang?.trim().split(/\s+/, 1)[0];
         nodes.push({
@@ -147,7 +173,17 @@ function appendChildren(element: Node, children: MarkdownNode[], ownerDocument: 
 }
 
 function createContainer(
-  tagName: 'p' | 'strong' | 'em' | 'code' | 'li' | 'blockquote' | 'span',
+  tagName:
+    | 'p'
+    | 'strong'
+    | 'em'
+    | 'code'
+    | 'li'
+    | 'blockquote'
+    | 'span'
+    | 'tr'
+    | 'th'
+    | 'td',
   children: MarkdownNode[],
   ownerDocument: Document,
 ): HTMLElement {
@@ -186,7 +222,33 @@ function renderNode(node: MarkdownNode, ownerDocument: Document): Node {
       return createContainer('li', node.children, ownerDocument);
     case 'blockquote':
       return createContainer('blockquote', node.children, ownerDocument);
+    case 'table': {
+      const scrollContainer = ownerDocument.createElement('div');
+      scrollContainer.className = 'chat-markdown-table';
+      const table = ownerDocument.createElement('table');
+      const tableHead = ownerDocument.createElement('thead');
+      const tableBody = ownerDocument.createElement('tbody');
+      tableHead.appendChild(renderNode(node.header, ownerDocument));
+      appendChildren(tableBody, node.rows, ownerDocument);
+      table.appendChild(tableHead);
+      table.appendChild(tableBody);
+      scrollContainer.appendChild(table);
+      return scrollContainer;
+    }
+    case 'tableRow':
+      return createContainer('tr', node.children, ownerDocument);
+    case 'tableCell':
+      return createContainer(node.header ? 'th' : 'td', node.children, ownerDocument);
     case 'codeBlock': {
+      const wrapper = ownerDocument.createElement('div');
+      wrapper.className = 'chat-code-block-wrapper';
+      const button = ownerDocument.createElement('button');
+      button.type = 'button';
+      button.className = 'chat-copy-button';
+      button.textContent = 'Copy';
+      button.addEventListener('click', () => {
+        navigator.clipboard.writeText(node.text).catch(() => { /* clipboard failure is non-fatal */ });
+      });
       const pre = ownerDocument.createElement('pre');
       const code = ownerDocument.createElement('code');
       code.textContent = node.text;
@@ -194,7 +256,9 @@ function renderNode(node: MarkdownNode, ownerDocument: Document): Node {
         code.className = `language-${node.language}`;
       }
       pre.appendChild(code);
-      return pre;
+      wrapper.appendChild(button);
+      wrapper.appendChild(pre);
+      return wrapper;
     }
     case 'link': {
       if (node.href === null) {
@@ -202,6 +266,8 @@ function renderNode(node: MarkdownNode, ownerDocument: Document): Node {
       }
       const link = ownerDocument.createElement('a');
       link.setAttribute('href', node.href);
+      link.setAttribute('target', '_blank');
+      link.setAttribute('rel', 'noopener noreferrer');
       appendChildren(link, node.children, ownerDocument);
       return link;
     }

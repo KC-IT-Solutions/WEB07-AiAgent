@@ -40,10 +40,10 @@ await describe('confirmation modal', async () => {
     assert.ok(modal.includes('title: string'));
     assert.ok(modal.includes('message: string'));
     assert.ok(modal.includes('confirmLabel: string'));
-    assert.ok(modal.includes('cancelLabel: string'));
+    assert.ok(modal.includes('cancelLabel?: string'));
     assert.ok(modal.includes('destructive?: boolean'));
     assert.ok(modal.includes('onConfirm: () => void | Promise<void>'));
-    assert.ok(modal.includes('onCancel: () => void'));
+    assert.ok(modal.includes('onCancel?: () => void | Promise<void>'));
     assert.ok(!modal.toLowerCase().includes('chat'));
   });
 
@@ -58,8 +58,9 @@ await describe('confirmation modal', async () => {
   });
 
   await it('cancels without confirming from the Cancel action', () => {
-    const cancelSection = extractSection('function cancel()', 'function handleKeydown');
-    assert.ok(cancelSection.includes('close(true)'));
+    const cancelSection = extractSection('async function cancel()', 'if (options.cancelLabel)');
+    assert.ok(cancelSection.includes('await options.onCancel()'));
+    assert.ok(cancelSection.includes('close()'));
     assert.ok(!cancelSection.includes('options.onConfirm'));
     assert.ok(modal.includes("cancelButton.addEventListener('click', cancel)"));
   });
@@ -84,12 +85,12 @@ await describe('confirmation modal', async () => {
   await it('disables both actions while confirmation proceeds', () => {
     const confirmSection = extractSection(
       'async function confirm',
-      "cancelButton.addEventListener('click'",
+      "confirmButton.addEventListener('click'"
     );
-    assert.ok(confirmSection.includes('cancelButton.disabled = true'));
+    assert.ok(confirmSection.includes('if (cancelButton) cancelButton.disabled = true'));
     assert.ok(confirmSection.includes('confirmButton.disabled = true'));
     assert.ok(confirmSection.includes('await options.onConfirm()'));
-    assert.ok(confirmSection.includes('close(false)'));
+    assert.ok(confirmSection.includes('close()'));
   });
 
   await it('supports destructive styling and restores focus after closing', () => {
