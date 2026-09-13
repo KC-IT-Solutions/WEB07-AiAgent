@@ -4,6 +4,7 @@ import { createTestDatabase } from '../../src/server/database.js';
 import { ProjectRepository } from '../../src/server/repositories/project-repository.js';
 import { AgentRepository } from '../../src/server/repositories/agent-repository.js';
 import { AgentRunRepository } from '../../src/server/repositories/agent-run-repository.js';
+import { AGENT_RUNTIME_LIMITS_DEFAULTS } from '../../src/server/runtime-limits.js';
 
 const defaultPermissions = {
   list: true,
@@ -129,6 +130,10 @@ await describe('AgentRunRepository', () => {
       stage: 'provider_request',
       code: 'MODEL_SERVER_TIMEOUT',
       message: 'The model provider request timed out.',
+      actualCharacters: 47_832,
+      limitCharacters: AGENT_RUNTIME_LIMITS_DEFAULTS.toolResultCharacters,
+      actualBytes: 1_468_002,
+      limitBytes: 1_048_576,
     };
     assert.equal(runs.fail(second.id, safeError), true);
     assert.equal(runs.getLatest(1, project.id, agent.id)?.id, second.id);

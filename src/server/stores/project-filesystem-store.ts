@@ -46,7 +46,10 @@ export type ProjectFilesystemStoreErrorCode =
   | 'PROJECT_FILESYSTEM_FAILED';
 
 export class ProjectFilesystemStoreError extends Error {
-  constructor(readonly code: ProjectFilesystemStoreErrorCode) {
+  constructor(
+    readonly code: ProjectFilesystemStoreErrorCode,
+    readonly limitBytes?: number,
+  ) {
     super(code);
     this.name = 'ProjectFilesystemStoreError';
   }
@@ -194,7 +197,10 @@ export class FileProjectFilesystemStore implements ProjectFilesystemStore {
         size += result.bytesRead;
       }
       if (size > MAX_PROJECT_TEXT_FILE_BYTES) {
-        throw new ProjectFilesystemStoreError('PROJECT_FILE_TOO_LARGE');
+        throw new ProjectFilesystemStoreError(
+          'PROJECT_FILE_TOO_LARGE',
+          MAX_PROJECT_TEXT_FILE_BYTES,
+        );
       }
       const bytes = buffer.subarray(0, size);
       const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -225,7 +231,10 @@ export class FileProjectFilesystemStore implements ProjectFilesystemStore {
     }
     const size = Buffer.byteLength(content, 'utf8');
     if (size > MAX_PROJECT_TEXT_FILE_BYTES) {
-      throw new ProjectFilesystemStoreError('PROJECT_FILE_TOO_LARGE');
+      throw new ProjectFilesystemStoreError(
+        'PROJECT_FILE_TOO_LARGE',
+        MAX_PROJECT_TEXT_FILE_BYTES,
+      );
     }
     const root = this.getRoot(userId, projectId);
     const lexicalPath = this.resolveLexical(root, relativePath, false);

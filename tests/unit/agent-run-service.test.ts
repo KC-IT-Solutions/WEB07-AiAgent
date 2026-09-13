@@ -10,6 +10,7 @@ import { ModelConnectionInferenceQueue } from '../../src/server/services/model-c
 import { SkillError } from '../../src/server/services/skill-service.js';
 import { ModelInferenceError, type ModelInferenceMessage, type ModelInferenceResult, type StreamedModelInferencePartialResult } from '../../src/services/model-inference.js';
 import { ProjectFilesystemError } from '../../src/server/services/project-filesystem-service.js';
+import { MAX_PROJECT_TEXT_FILE_BYTES } from '../../src/server/stores/project-filesystem-store.js';
 import { ToolRegistry } from '../../src/server/tools/tool-registry.js';
 import { RunAgentTool } from '../../src/server/tools/run-agent-tool.js';
 import { safeExecutionJson } from '../../src/server/agent-execution-safety.js';
@@ -20,6 +21,11 @@ import {
 } from '../../src/server/tool-types.js';
 import type { Skill } from '../../src/server/skill-types.js';
 import type { AgentData, AgentToolConfiguration } from '../../src/server/agent-types.js';
+import {
+  AGENT_RUNTIME_LIMITS_DEFAULTS,
+  type AgentRuntimeLimits,
+  type AgentRuntimeLimitsProvider,
+} from '../../src/server/runtime-limits.js';
 
 const connection = {
   id: 7,
@@ -100,6 +106,7 @@ function setup(
     filesystem?: Partial<TestFilesystem>;
     agentData?:  Partial<AgentData>;
     testNow?: () => Date;
+    runtimeLimits?: AgentRuntimeLimitsProvider;
   } = {},
 ) {
   const db = createTestDatabase();
@@ -185,6 +192,7 @@ function setup(
     undefined,
     undefined,
     options.testNow,
+    options.runtimeLimits,
   );
   return { db, agents, runs, project, agent, queue, service, registry, skillRepository, skills };
 }
@@ -389,10 +397,11 @@ await describe('AgentRunService', () => {
     assert.ok(event && event.eventType === 'pre_run_tool_result');
     const storedResult = JSON.parse(event.data.result) as { observations: unknown[] };
     assert.equal(storedResult.observations.length, 201);
-    assert.deepEqual(storedResult.observations[0], observations[0]);
-    assert.deepEqual(storedResult.observations[199], observations[199]);
-    assert.equal(storedResult.observations[200], '[ITEMS TRUNCATED]');
-    assert.equal(event.data.result.includes('observation-200'), false);
+    assert.equal(storedResult.observations[0], '[ITEMS TRUNCATED]');
+    assert.deepEqual(storedResult.observations[1], observations[1]);
+    assert.deepEqual(storedResult.observations[200], observations[200]);
+    assert.equal(event.data.result.includes('observation-000'), false);
+    assert.equal(event.data.result.includes('observation-200'), true);
 
     const userContent = requireMessageContent(requests[0]?.[1]);
     const resultStart = userContent.indexOf('Result:\n') + 'Result:\n'.length;
@@ -407,7 +416,10 @@ await describe('AgentRunService', () => {
   });
 
   it('delivers pre-run results completely at and below the model-context character limit', async () => {
-    for (const serializedLength of [31_999, 32_000]) {
+    for (const serializedLength of [
+      AGENT_RUNTIME_LIMITS_DEFAULTS.toolResultCharacters - 1,
+      AGENT_RUNTIME_LIMITS_DEFAULTS.toolResultCharacters,
+    ]) {
       const result = 'x'.repeat(serializedLength - 2);
       let userContent = '';
       const context = setup(
@@ -472,7 +484,7 @@ await describe('AgentRunService', () => {
       inputFile: 'inputs/large.json',
       callIndex: 1,
       actualCharacters,
-      limitCharacters: 32_000,
+      limitCharacters: AGENT_RUNTIME_LIMITS_DEFAULTS.toolResultCharacters,
     });
     const execution = context.service.execution(context.project.id, context.agent.id, run.id)!;
     assert.deepEqual(execution.map((event) => event.eventType), [
@@ -483,6 +495,61 @@ await describe('AgentRunService', () => {
     assert.equal(JSON.stringify(failed.safeError).includes('sensitive-result'), false);
     assert.equal(execution.some((event) => event.eventType === 'final_result'), false);
     context.db.close();
+  });
+
+  it('uses configured tool-result limits at exact, raised, and lowered boundaries', async () => {
+    for (const testCase of [
+      { limit: 40_000, serializedLength: 33_000, expectedStatus: 'done' },
+      { limit: 1_000, serializedLength: 1_000, expectedStatus: 'done' },
+      { limit: 1_000, serializedLength: 1_001, expectedStatus: 'error' },
+    ] as const) {
+      let requestCount = 0;
+      const context = setup(
+        async () => {
+          requestCount += 1;
+          return { type: 'message', content: 'Done' };
+        },
+        {
+          toolNames: [],
+          toolConfigurations: [
+            { toolName: 'configured_limit_tool', preRunInputFile: 'inputs/configured.json' },
+          ],
+          tools: [
+            createTestTool('configured_limit_tool', async () =>
+              'x'.repeat(testCase.serializedLength - 2),
+            ),
+          ],
+          filesystem: {
+            readFile: async () => ({
+              relativePath: 'inputs/configured.json',
+              content: '[{"value":"configured"}]',
+              size: 24,
+            }),
+          },
+          runtimeLimits: {
+            getAgentRuntimeLimits: async () => ({
+              ...AGENT_RUNTIME_LIMITS_DEFAULTS,
+              toolResultCharacters: testCase.limit,
+            }),
+          },
+        },
+      );
+
+      const run = await context.service.start(context.project.id, context.agent.id);
+      await waitFor(
+        () =>
+          context.service.get(context.project.id, context.agent.id, run.id)?.status ===
+          testCase.expectedStatus,
+      );
+      const terminal = context.service.get(context.project.id, context.agent.id, run.id)!;
+      assert.equal(requestCount, testCase.expectedStatus === 'done' ? 1 : 0);
+      if (testCase.expectedStatus === 'error') {
+        assert.equal(terminal.safeError?.code, 'TOOL_RESULT_TOO_LARGE');
+        assert.equal(terminal.safeError?.actualCharacters, testCase.serializedLength);
+        assert.equal(terminal.safeError?.limitCharacters, testCase.limit);
+      }
+      context.db.close();
+    }
   });
 
   it('does not let a provider invoke a tool configured only for pre-run', async () => {
@@ -1265,6 +1332,47 @@ await describe('AgentRunService', () => {
     context.db.close();
   });
 
+  it('records an automatic-chain target Assignment overflow without target inference', async () => {
+    let sourceInferenceCount = 0;
+    let targetInferenceCount = 0;
+    const context = setup(async (_baseUrl, _timeout, modelId) => {
+      if (modelId === 'target-model') {
+        targetInferenceCount += 1;
+        return { type: 'message', content: 'Must not run' };
+      }
+      sourceInferenceCount += 1;
+      return { type: 'message', content: 'Source complete' };
+    });
+    const target = context.agents.create(context.project.id, {
+      ...baseAgentData,
+      name: 'Oversized automatic target',
+      assignment: 'x'.repeat(AGENT_RUNTIME_LIMITS_DEFAULTS.assignmentCharacters + 1),
+      modelId: 'target-model',
+    });
+    assert.ok(
+      context.agents.update(
+        1,
+        context.project.id,
+        context.agent.id,
+        { ...context.agent.data, triggerNextAgent: true },
+        target.id,
+      ),
+    );
+
+    const sourceRun = await context.service.start(context.project.id, context.agent.id);
+    await waitFor(() => context.service.latest(context.project.id, target.id)?.status === 'error');
+    const targetRun = context.service.latest(context.project.id, target.id)!;
+    assert.equal(context.service.get(context.project.id, context.agent.id, sourceRun.id)?.status, 'done');
+    assert.equal(sourceInferenceCount, 1);
+    assert.equal(targetInferenceCount, 0);
+    assert.equal(targetRun.safeError?.code, 'ASSIGNMENT_TOO_LARGE');
+    assert.equal(
+      targetRun.safeError?.limitCharacters,
+      AGENT_RUNTIME_LIMITS_DEFAULTS.assignmentCharacters,
+    );
+    context.db.close();
+  });
+
   it('runs the configured Agent concurrently, waits outside the model queue, and returns only Done', async () => {
     let sourceRound = 0;
     const capturedSourceMessages: ModelInferenceMessage[][] = [];
@@ -1381,7 +1489,7 @@ await describe('AgentRunService', () => {
     const target = context.agents.create(context.project.id, {
       ...baseAgentData,
       name: 'Large target',
-      assignment: 'x'.repeat(100_001),
+      assignment: 'x'.repeat(AGENT_RUNTIME_LIMITS_DEFAULTS.assignmentCharacters + 1),
       modelId: 'target-model',
     });
     context.agents.replaceTools(context.agent.id, ['run_agent'], [
@@ -1395,7 +1503,10 @@ await describe('AgentRunService', () => {
     assert.equal(targetRun.status, 'error');
     assert.equal(targetRun.task, '');
     assert.equal(targetRun.safeError?.code, 'ASSIGNMENT_TOO_LARGE');
-    assert.equal(targetRun.safeError?.actualCharacters, 100_001);
+    assert.equal(
+      targetRun.safeError?.actualCharacters,
+      AGENT_RUNTIME_LIMITS_DEFAULTS.assignmentCharacters + 1,
+    );
     const runnerResult = context.service
       .execution(context.project.id, context.agent.id, callerRun.id)
       ?.find((event) => event.eventType === 'tool_result');
@@ -2073,13 +2184,15 @@ await describe('AgentRunService', () => {
 
   it('bounds and redacts structured tool arguments and results in the execution transcript', async () => {
     let round = 0;
+    const requests: ModelInferenceMessage[][] = [];
     const tool = createTestTool('safe_display_tool', async () => ({
       apiKey: 'result-secret',
       projectRoot: 'C:\\private\\project',
       observations: Array.from({ length: 201 }, (_, index) => ({ index })),
     }));
     const context = setup(
-      async () => {
+      async (_baseUrl, _timeout, _modelId, messages) => {
+        requests.push(structuredClone(messages));
         round += 1;
         if (round === 2) return { type: 'message', content: 'Finished safely' };
         const calls = [
@@ -2121,13 +2234,26 @@ await describe('AgentRunService', () => {
     assert.ok(toolResult && toolResult.eventType === 'tool_result');
     const displayedResult = JSON.parse(toolResult.data.result) as { observations: unknown[] };
     assert.equal(displayedResult.observations.length, 201);
-    assert.equal(displayedResult.observations[200], '[ITEMS TRUNCATED]');
+    assert.equal(displayedResult.observations[0], '[ITEMS TRUNCATED]');
+    assert.deepEqual(displayedResult.observations[1], { index: 1 });
+    assert.deepEqual(displayedResult.observations[200], { index: 200 });
+    assert.equal(toolResult.data.result.includes('"index":0'), false);
+    const modelToolMessage = requests[1]?.find((message) => message.role === 'tool');
+    assert.ok(modelToolMessage && modelToolMessage.role === 'tool');
+    const modelResult = JSON.parse(modelToolMessage.content) as { observations: Array<{ index: number }> };
+    assert.equal(modelResult.observations.length, 201);
+    assert.deepEqual(modelResult.observations[0], { index: 0 });
+    assert.deepEqual(modelResult.observations[200], { index: 200 });
+    assert.equal(modelToolMessage.content.includes('[ITEMS TRUNCATED]'), false);
+    assert.equal(context.service.get(context.project.id, context.agent.id, run.id)?.status, 'done');
     context.db.close();
   });
 
   it('fails an oversized ordinary tool result without a truncated tool message or another inference', async () => {
     const requests: ModelInferenceMessage[][] = [];
-    const oversizedResult = { content: 'x'.repeat(32_000) };
+    const oversizedResult = {
+      content: 'x'.repeat(AGENT_RUNTIME_LIMITS_DEFAULTS.toolResultCharacters),
+    };
     let round = 0;
     const context = setup(
       async (_baseUrl, _timeout, _modelId, messages) => {
@@ -2159,7 +2285,10 @@ await describe('AgentRunService', () => {
     assert.equal(failed.safeError?.code, 'TOOL_RESULT_TOO_LARGE');
     assert.equal(failed.safeError?.toolName, 'large_result_tool');
     assert.equal(failed.safeError?.actualCharacters, JSON.stringify(oversizedResult).length);
-    assert.equal(failed.safeError?.limitCharacters, 32_000);
+    assert.equal(
+      failed.safeError?.limitCharacters,
+      AGENT_RUNTIME_LIMITS_DEFAULTS.toolResultCharacters,
+    );
     const execution = context.service.execution(context.project.id, context.agent.id, run.id)!;
     assert.deepEqual(execution.map((event) => event.eventType), [
       'user_task',
@@ -2533,7 +2662,9 @@ await describe('AgentRunService', () => {
   it('fails oversized inline and file Assignments explicitly before inference', async () => {
     for (const assignmentSource of ['inline', 'file'] as const) {
       let requestCount = 0;
-      const oversizedAssignment = 'x'.repeat(100_001);
+      const oversizedAssignment = 'x'.repeat(
+        AGENT_RUNTIME_LIMITS_DEFAULTS.assignmentCharacters + 1,
+      );
       const context = setup(
         async () => {
           requestCount += 1;
@@ -2564,8 +2695,14 @@ await describe('AgentRunService', () => {
       const failed = await context.service.start(context.project.id, context.agent.id);
       assert.equal(failed.status, 'error');
       assert.equal(failed.safeError?.code, 'ASSIGNMENT_TOO_LARGE');
-      assert.equal(failed.safeError?.actualCharacters, 100_001);
-      assert.equal(failed.safeError?.limitCharacters, 100_000);
+      assert.equal(
+        failed.safeError?.actualCharacters,
+        AGENT_RUNTIME_LIMITS_DEFAULTS.assignmentCharacters + 1,
+      );
+      assert.equal(
+        failed.safeError?.limitCharacters,
+        AGENT_RUNTIME_LIMITS_DEFAULTS.assignmentCharacters,
+      );
       assert.equal(requestCount, 0);
       assert.equal(failed.task, '');
       context.db.close();
@@ -2573,7 +2710,7 @@ await describe('AgentRunService', () => {
   });
 
   it('delivers an Assignment exactly at the runtime character limit completely', async () => {
-    const exactAssignment = 'x'.repeat(100_000);
+    const exactAssignment = 'x'.repeat(AGENT_RUNTIME_LIMITS_DEFAULTS.assignmentCharacters);
     let deliveredTask = '';
     const context = setup(
       async (_baseUrl, _timeout, _modelId, messages) => {
@@ -2585,7 +2722,7 @@ await describe('AgentRunService', () => {
     const run = await context.service.start(context.project.id, context.agent.id);
     await waitFor(() => context.service.get(context.project.id, context.agent.id, run.id)?.status === 'done');
     assert.equal(deliveredTask, exactAssignment);
-    assert.equal(deliveredTask.length, 100_000);
+    assert.equal(deliveredTask.length, AGENT_RUNTIME_LIMITS_DEFAULTS.assignmentCharacters);
     context.db.close();
   });
 
@@ -2603,7 +2740,12 @@ await describe('AgentRunService', () => {
           assignmentFilePath: 'tasks/too-large.md',
         },
         filesystem: {
-          readFile: async () => { throw new ProjectFilesystemError('PROJECT_FILE_TOO_LARGE'); },
+          readFile: async () => {
+            throw new ProjectFilesystemError(
+              'PROJECT_FILE_TOO_LARGE',
+              MAX_PROJECT_TEXT_FILE_BYTES,
+            );
+          },
         },
       },
     );
@@ -2611,6 +2753,8 @@ await describe('AgentRunService', () => {
     const failed = await context.service.start(context.project.id, context.agent.id);
     assert.equal(failed.status, 'error');
     assert.equal(failed.safeError?.code, 'ASSIGNMENT_TOO_LARGE');
+    assert.equal(failed.safeError?.inputFile, 'tasks/too-large.md');
+    assert.equal(failed.safeError?.limitBytes, MAX_PROJECT_TEXT_FILE_BYTES);
     assert.equal(requestCount, 0);
     context.db.close();
   });
@@ -2697,13 +2841,20 @@ await describe('AgentRunService', () => {
   });
 
   it('fails oversized inline and filesystem-bounded instruction content before inference', async () => {
-    const cases: Array<{ agentData: Partial<AgentData>; filesystem?: Partial<TestFilesystem>; actual?: number }> = [
+    const cases: Array<{
+      agentData: Partial<AgentData>;
+      filesystem?: Partial<TestFilesystem>;
+      actual?: number;
+      limitBytes?: number;
+    }> = [
       {
         agentData: {
           instructionSource: 'inline',
-          instructions: 'x'.repeat(20_001),
+          instructions: 'x'.repeat(
+            AGENT_RUNTIME_LIMITS_DEFAULTS.inlineInstructionsCharacters + 1,
+          ),
         },
-        actual: 20_001,
+        actual: AGENT_RUNTIME_LIMITS_DEFAULTS.inlineInstructionsCharacters + 1,
       },
       {
         agentData: {
@@ -2712,8 +2863,14 @@ await describe('AgentRunService', () => {
           instructionFilePath: 'instructions/too-large.md',
         },
         filesystem: {
-          readFile: async () => { throw new ProjectFilesystemError('PROJECT_FILE_TOO_LARGE'); },
+          readFile: async () => {
+            throw new ProjectFilesystemError(
+              'PROJECT_FILE_TOO_LARGE',
+              MAX_PROJECT_TEXT_FILE_BYTES,
+            );
+          },
         },
+        limitBytes: MAX_PROJECT_TEXT_FILE_BYTES,
       },
     ];
     for (const testCase of cases) {
@@ -2730,14 +2887,24 @@ await describe('AgentRunService', () => {
       const failed = context.service.get(context.project.id, context.agent.id, run.id)!;
       assert.equal(failed.safeError?.code, 'INSTRUCTION_TOO_LARGE');
       assert.equal(failed.safeError?.actualCharacters, testCase.actual);
-      assert.equal(failed.safeError?.limitCharacters, testCase.actual ? 20_000 : undefined);
+      assert.equal(
+        failed.safeError?.limitCharacters,
+        testCase.actual ? AGENT_RUNTIME_LIMITS_DEFAULTS.inlineInstructionsCharacters : undefined,
+      );
+      assert.equal(failed.safeError?.limitBytes, testCase.limitBytes);
+      assert.equal(
+        failed.safeError?.inputFile,
+        testCase.limitBytes ? 'instructions/too-large.md' : undefined,
+      );
       assert.equal(requestCount, 0);
       context.db.close();
     }
   });
 
   it('delivers inline instructions exactly at their character limit completely', async () => {
-    const exactInstructions = 'x'.repeat(20_000);
+    const exactInstructions = 'x'.repeat(
+      AGENT_RUNTIME_LIMITS_DEFAULTS.inlineInstructionsCharacters,
+    );
     let deliveredInstructions = '';
     const context = setup(
       async (_baseUrl, _timeout, _modelId, messages) => {
@@ -2750,6 +2917,90 @@ await describe('AgentRunService', () => {
     await waitFor(() => context.service.get(context.project.id, context.agent.id, run.id)?.status === 'done');
     assert.equal(deliveredInstructions.startsWith(exactInstructions), true);
     assert.equal(deliveredInstructions.includes('[CONTENT TRUNCATED]'), false);
+    context.db.close();
+  });
+
+  it('honors configured Assignment and inline Instructions boundaries', async () => {
+    for (const kind of ['assignment', 'instructions'] as const) {
+      for (const offset of [0, 1] as const) {
+        const limit = 1_500;
+        let requestCount = 0;
+        const context = setup(
+          async () => {
+            requestCount += 1;
+            return { type: 'message', content: 'Done' };
+          },
+          {
+            agentData:
+              kind === 'assignment'
+                ? { assignment: 'x'.repeat(limit + offset) }
+                : { instructionSource: 'inline', instructions: 'x'.repeat(limit + offset) },
+            runtimeLimits: {
+              getAgentRuntimeLimits: async () => ({
+                ...AGENT_RUNTIME_LIMITS_DEFAULTS,
+                assignmentCharacters: limit,
+                inlineInstructionsCharacters: limit,
+              }),
+            },
+          },
+        );
+        const run = await context.service.start(context.project.id, context.agent.id);
+        if (offset === 0) {
+          await waitFor(
+            () => context.service.get(context.project.id, context.agent.id, run.id)?.status === 'done',
+          );
+          assert.equal(requestCount, 1);
+        } else {
+          await waitFor(
+            () => context.service.get(context.project.id, context.agent.id, run.id)?.status === 'error',
+          );
+          const failed = context.service.get(context.project.id, context.agent.id, run.id)!;
+          assert.equal(
+            failed.safeError?.code,
+            kind === 'assignment' ? 'ASSIGNMENT_TOO_LARGE' : 'INSTRUCTION_TOO_LARGE',
+          );
+          assert.equal(failed.safeError?.actualCharacters, limit + 1);
+          assert.equal(failed.safeError?.limitCharacters, limit);
+          assert.equal(requestCount, 0);
+        }
+        context.db.close();
+      }
+    }
+  });
+
+  it('keeps a runtime-limit snapshot for a run and applies updates to the next run', async () => {
+    let currentLimits: AgentRuntimeLimits = {
+      ...AGENT_RUNTIME_LIMITS_DEFAULTS,
+      inlineInstructionsCharacters: 2_000,
+    };
+    let requestCount = 0;
+    const context = setup(
+      async () => {
+        requestCount += 1;
+        return { type: 'message', content: 'Done' };
+      },
+      {
+        agentData: { instructionSource: 'inline', instructions: 'x'.repeat(1_500) },
+        runtimeLimits: { getAgentRuntimeLimits: async () => ({ ...currentLimits }) },
+      },
+    );
+
+    const first = await context.service.start(context.project.id, context.agent.id);
+    currentLimits = { ...currentLimits, inlineInstructionsCharacters: 1_000 };
+    await waitFor(
+      () => context.service.get(context.project.id, context.agent.id, first.id)?.status === 'done',
+    );
+    const second = await context.service.start(context.project.id, context.agent.id);
+    await waitFor(
+      () => context.service.get(context.project.id, context.agent.id, second.id)?.status === 'error',
+    );
+
+    assert.equal(requestCount, 1);
+    assert.equal(
+      context.service.get(context.project.id, context.agent.id, second.id)?.safeError
+        ?.limitCharacters,
+      1_000,
+    );
     context.db.close();
   });
 

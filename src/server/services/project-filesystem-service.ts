@@ -15,7 +15,10 @@ export const DEFAULT_PROJECT_FILE_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 export type ProjectFilesystemErrorCode = 'PROJECT_NOT_FOUND' | ProjectFilesystemStoreErrorCode;
 
 export class ProjectFilesystemError extends Error {
-  constructor(readonly code: ProjectFilesystemErrorCode) {
+  constructor(
+    readonly code: ProjectFilesystemErrorCode,
+    readonly limitBytes?: number,
+  ) {
     super(code);
     this.name = 'ProjectFilesystemError';
   }
@@ -113,7 +116,7 @@ export class ProjectFilesystemService {
       throw new ProjectFilesystemError('PROJECT_PATH_INVALID');
     }
     if (content.byteLength > this.maxUploadBytes) {
-      throw new ProjectFilesystemError('PROJECT_FILE_TOO_LARGE');
+      throw new ProjectFilesystemError('PROJECT_FILE_TOO_LARGE', this.maxUploadBytes);
     }
     const path = targetDirectory ? `${targetDirectory}/${safeFilename}` : safeFilename;
     return this.run(() => this.filesystem.writeBinaryFile(userId, projectId, path, content));
@@ -169,7 +172,7 @@ export class ProjectFilesystemService {
         throw error;
       }
       if (error instanceof ProjectFilesystemStoreError) {
-        throw new ProjectFilesystemError(error.code);
+        throw new ProjectFilesystemError(error.code, error.limitBytes);
       }
       throw new ProjectFilesystemError('PROJECT_FILESYSTEM_FAILED');
     }

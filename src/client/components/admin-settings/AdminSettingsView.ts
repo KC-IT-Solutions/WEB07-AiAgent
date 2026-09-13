@@ -3,6 +3,7 @@ import { createConfirmationModal } from '../ConfirmationModal.js';
 const LOG_LEVELS = ['error', 'warn', 'info', 'debug', 'trace'] as const;
 const MODEL_VISIBILITY_SAVE_DELAY_MS = 300;
 const MAX_MODEL_DESCRIPTION_LENGTH = 500;
+const KIBIBYTE = 1024;
 type LogLevel = (typeof LOG_LEVELS)[number];
 
 interface LoggingSettings {
@@ -10,6 +11,28 @@ interface LoggingSettings {
   applicationLogEnabled: boolean;
   modelInferenceLogEnabled: boolean;
   clearLogsOnStartup: boolean;
+}
+
+interface AgentRuntimeLimits {
+  toolResultCharacters: number;
+  assignmentCharacters: number;
+  inlineInstructionsCharacters: number;
+  attachedFileBytes: number;
+  attachedFilesTotalBytes: number;
+}
+
+type AgentRuntimeLimitBounds = {
+  [Key in keyof AgentRuntimeLimits]: { min: number; max: number };
+};
+
+interface AgentRuntimeLimitsConfiguration {
+  limits: AgentRuntimeLimits;
+  defaults: AgentRuntimeLimits;
+  bounds: AgentRuntimeLimitBounds;
+}
+
+function formatGroupedInteger(value: number): string {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 interface AdminModelConnection {
@@ -50,9 +73,7 @@ function parseModelConnections(value: unknown): AdminModelConnection[] | null {
 }
 
 function parseStringArray(value: unknown): string[] | null {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
-    ? value
-    : null;
+  return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null;
 }
 
 function parseModelDescriptions(value: unknown): Record<string, string> | null {
@@ -95,7 +116,8 @@ function createModelVisibilityCard(): HTMLElement {
   const heading = document.createElement('h2');
   heading.textContent = 'Model visibility';
   const description = document.createElement('p');
-  description.textContent = 'Choose which discovered models are available throughout the application.';
+  description.textContent =
+    'Choose which discovered models are available throughout the application.';
   const list = document.createElement('div');
   list.className = 'admin-model-visibility-list';
   const status = document.createElement('p');
@@ -250,7 +272,8 @@ function createModelVisibilityCard(): HTMLElement {
         }
         renderEditor(panel, authoritative, 'Failed to save. Restored saved settings.', true);
       } catch {
-        editorStatus.textContent = 'Failed to save. Reload model visibility to restore saved settings.';
+        editorStatus.textContent =
+          'Failed to save. Reload model visibility to restore saved settings.';
       }
     };
 
@@ -294,7 +317,11 @@ function createModelVisibilityCard(): HTMLElement {
           savedDescriptions = isRecord(saved)
             ? parseModelDescriptions(saved.modelDescriptions)
             : null;
-          if (!isRecord(saved) || saved.connectionId !== visibility.connectionId || !savedDescriptions) {
+          if (
+            !isRecord(saved) ||
+            saved.connectionId !== visibility.connectionId ||
+            !savedDescriptions
+          ) {
             throw new Error('Invalid model descriptions response');
           }
         }
@@ -306,8 +333,7 @@ function createModelVisibilityCard(): HTMLElement {
             updateMode();
             const authoritativeIds = new Set(savedVisibility.visibleModelIds);
             for (const [modelId, checkbox] of checkboxes) {
-              checkbox.checked =
-                !savedVisibility.filterConfigured || authoritativeIds.has(modelId);
+              checkbox.checked = !savedVisibility.filterConfigured || authoritativeIds.has(modelId);
             }
           }
           if (savedDescriptions) {
@@ -482,6 +508,268 @@ function parseLoggingSettings(value: unknown): LoggingSettings | null {
     modelInferenceLogEnabled: data.modelInferenceLogEnabled,
     clearLogsOnStartup: data.clearLogsOnStartup,
   };
+}
+
+function parseAgentRuntimeLimits(value: unknown): AgentRuntimeLimits | null {
+  if (!isRecord(value)) return null;
+  const expectedKeys: ReadonlyArray<keyof AgentRuntimeLimits> = [
+    'toolResultCharacters',
+    'assignmentCharacters',
+    'inlineInstructionsCharacters',
+    'attachedFileBytes',
+    'attachedFilesTotalBytes',
+  ];
+  const keys = Object.keys(value);
+  if (
+    keys.length !== expectedKeys.length ||
+    !keys.every((key) => expectedKeys.some((expectedKey) => expectedKey === key))
+  ) {
+    return null;
+  }
+  const isNonnegativeInteger = (field: unknown): field is number =>
+    typeof field === 'number' &&
+    Number.isFinite(field) &&
+    Number.isSafeInteger(field) &&
+    field >= 0;
+  if (
+    !isNonnegativeInteger(value.toolResultCharacters) ||
+    !isNonnegativeInteger(value.assignmentCharacters) ||
+    !isNonnegativeInteger(value.inlineInstructionsCharacters) ||
+    !isNonnegativeInteger(value.attachedFileBytes) ||
+    !isNonnegativeInteger(value.attachedFilesTotalBytes) ||
+    value.attachedFilesTotalBytes < value.attachedFileBytes
+  ) {
+    return null;
+  }
+  return {
+    toolResultCharacters: value.toolResultCharacters,
+    assignmentCharacters: value.assignmentCharacters,
+    inlineInstructionsCharacters: value.inlineInstructionsCharacters,
+    attachedFileBytes: value.attachedFileBytes,
+    attachedFilesTotalBytes: value.attachedFilesTotalBytes,
+  };
+}
+
+function parseAgentRuntimeLimitsConfiguration(
+  value: unknown,
+): AgentRuntimeLimitsConfiguration | null {
+  if (!isRecord(value) || !isRecord(value.bounds)) return null;
+  const limits = parseAgentRuntimeLimits(value.limits);
+  const defaults = parseAgentRuntimeLimits(value.defaults);
+  if (!limits || !defaults) return null;
+  if (Object.keys(value.bounds).length !== Object.keys(defaults).length) return null;
+  const bounds = {} as AgentRuntimeLimitBounds;
+  for (const key of Object.keys(defaults) as Array<keyof AgentRuntimeLimits>) {
+    const item = value.bounds[key];
+    if (
+      !isRecord(item) ||
+      !Number.isSafeInteger(item.min) ||
+      !Number.isSafeInteger(item.max) ||
+      Number(item.min) < 0 ||
+      Number(item.max) < Number(item.min)
+    ) {
+      return null;
+    }
+    bounds[key] = { min: Number(item.min), max: Number(item.max) };
+    if (
+      limits[key] < bounds[key].min ||
+      limits[key] > bounds[key].max ||
+      defaults[key] < bounds[key].min ||
+      defaults[key] > bounds[key].max
+    ) {
+      return null;
+    }
+  }
+  return { limits, defaults, bounds };
+}
+
+function createAgentRuntimeLimitsCard(): HTMLElement {
+  const card = document.createElement('section');
+  card.className = 'settings-card';
+  const heading = document.createElement('h2');
+  heading.textContent = 'Agent runtime limits';
+  const description = document.createElement('p');
+  description.textContent = 'Configure size limits applied while Agents run.';
+  const form = document.createElement('form');
+  form.className = 'settings-form';
+
+  const createNumberControl = (
+    id: string,
+    labelText: string,
+  ): { group: HTMLElement; input: HTMLInputElement; defaultValue: HTMLElement } => {
+    const group = document.createElement('div');
+    group.className = 'settings-form-group';
+    const label = document.createElement('label');
+    label.htmlFor = id;
+    label.textContent = labelText;
+    const input = document.createElement('input');
+    input.id = id;
+    input.className = 'settings-input';
+    input.type = 'number';
+    input.required = true;
+    input.step = '1';
+    const defaultValue = document.createElement('small');
+    group.append(label, input, defaultValue);
+    return { group, input, defaultValue };
+  };
+
+  const toolResult = createNumberControl(
+    'admin-agent-tool-result-characters',
+    'Tool result for model context (characters)',
+  );
+  const assignment = createNumberControl(
+    'admin-agent-assignment-characters',
+    'Effective Agent assignment (characters)',
+  );
+  const inlineInstructions = createNumberControl(
+    'admin-agent-inline-instructions-characters',
+    'Inline Agent instructions (characters)',
+  );
+  const attachedFile = createNumberControl(
+    'admin-agent-attached-file-kib',
+    'Attached Project file (KiB)',
+  );
+  const attachedFilesTotal = createNumberControl(
+    'admin-agent-attached-files-total-kib',
+    'Attached Project files total (KiB)',
+  );
+
+  const buttonRow = document.createElement('div');
+  buttonRow.className = 'settings-button-row';
+  const saveButton = document.createElement('button');
+  saveButton.type = 'submit';
+  saveButton.className = 'settings-save-button';
+  saveButton.textContent = 'Save';
+  const resetButton = document.createElement('button');
+  resetButton.type = 'button';
+  resetButton.className = 'settings-test-button';
+  resetButton.textContent = 'Reset to defaults';
+  const status = document.createElement('p');
+  status.className = 'settings-saved-status';
+  status.setAttribute('role', 'status');
+  buttonRow.append(saveButton, resetButton);
+  form.append(
+    toolResult.group,
+    assignment.group,
+    inlineInstructions.group,
+    attachedFile.group,
+    attachedFilesTotal.group,
+    buttonRow,
+    status,
+  );
+  card.append(heading, description, form);
+  saveButton.disabled = true;
+  resetButton.disabled = true;
+  let defaults: AgentRuntimeLimits | null = null;
+
+  const setStatus = (message: string, isError = false): void => {
+    status.textContent = message;
+    status.classList.toggle('settings-saved-status-error', isError);
+    status.setAttribute('role', isError ? 'alert' : 'status');
+  };
+  const populate = (limits: AgentRuntimeLimits): void => {
+    toolResult.input.value = String(limits.toolResultCharacters);
+    assignment.input.value = String(limits.assignmentCharacters);
+    inlineInstructions.input.value = String(limits.inlineInstructionsCharacters);
+    attachedFile.input.value = String(limits.attachedFileBytes / KIBIBYTE);
+    attachedFilesTotal.input.value = String(limits.attachedFilesTotalBytes / KIBIBYTE);
+  };
+  const applyConfiguration = (configuration: AgentRuntimeLimitsConfiguration): void => {
+    defaults = configuration.defaults;
+    const controls = [toolResult, assignment, inlineInstructions] as const;
+    const characterKeys = [
+      'toolResultCharacters',
+      'assignmentCharacters',
+      'inlineInstructionsCharacters',
+    ] as const;
+    controls.forEach((control, index) => {
+      const key = characterKeys[index];
+      control.input.min = String(configuration.bounds[key].min);
+      control.input.max = String(configuration.bounds[key].max);
+      control.defaultValue.textContent = `Default: ${formatGroupedInteger(configuration.defaults[key])} characters`;
+    });
+    for (const [control, key] of [
+      [attachedFile, 'attachedFileBytes'],
+      [attachedFilesTotal, 'attachedFilesTotalBytes'],
+    ] as const) {
+      control.input.min = String(configuration.bounds[key].min / KIBIBYTE);
+      control.input.max = String(configuration.bounds[key].max / KIBIBYTE);
+      control.defaultValue.textContent = `Default: ${formatGroupedInteger(configuration.defaults[key] / KIBIBYTE)} KiB`;
+    }
+    populate(configuration.limits);
+    saveButton.disabled = false;
+    resetButton.disabled = false;
+  };
+  const readForm = (): AgentRuntimeLimits | null => {
+    const candidate: AgentRuntimeLimits = {
+      toolResultCharacters: toolResult.input.valueAsNumber,
+      assignmentCharacters: assignment.input.valueAsNumber,
+      inlineInstructionsCharacters: inlineInstructions.input.valueAsNumber,
+      attachedFileBytes: attachedFile.input.valueAsNumber * KIBIBYTE,
+      attachedFilesTotalBytes: attachedFilesTotal.input.valueAsNumber * KIBIBYTE,
+    };
+    return form.checkValidity() ? parseAgentRuntimeLimits(candidate) : null;
+  };
+
+  resetButton.addEventListener('click', () => {
+    if (!defaults) return;
+    populate(defaults);
+    setStatus('Defaults restored in the form. Save to apply them.');
+  });
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const limits = readForm();
+    if (!limits) {
+      setStatus(
+        'Enter valid limits. Total attached files must be at least the per-file limit.',
+        true,
+      );
+      return;
+    }
+    void (async () => {
+      saveButton.disabled = true;
+      setStatus('Saving...');
+      try {
+        const response = await fetch('/api/admin/settings/agent-runtime-limits', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(limits),
+        });
+        if (!response.ok) {
+          if (response.status >= 400 && response.status < 500) {
+            setStatus('The server rejected these runtime limits. Check each value.', true);
+            return;
+          }
+          throw new Error(`Server returned ${response.status}`);
+        }
+        const saved = parseAgentRuntimeLimits((await response.json()) as unknown);
+        if (!saved) throw new Error('Invalid agent runtime limits response');
+        populate(saved);
+        setStatus('Agent runtime limits saved.');
+      } catch {
+        setStatus('Failed to save Agent runtime limits.', true);
+      } finally {
+        saveButton.disabled = false;
+      }
+    })();
+  });
+
+  void (async () => {
+    setStatus('Loading Agent runtime limits...');
+    try {
+      const response = await fetch('/api/admin/settings/agent-runtime-limits');
+      const configuration = response.ok
+        ? parseAgentRuntimeLimitsConfiguration((await response.json()) as unknown)
+        : null;
+      if (!configuration) throw new Error('Invalid agent runtime limits response');
+      applyConfiguration(configuration);
+      setStatus('');
+    } catch {
+      setStatus('Failed to load Agent runtime limits.', true);
+    }
+  })();
+
+  return card;
 }
 
 function createLogTypeControl(
@@ -717,6 +1005,7 @@ export function createAdminSettingsView(): HTMLElement {
   card.appendChild(description);
   card.appendChild(form);
   container.appendChild(card);
+  container.appendChild(createAgentRuntimeLimitsCard());
   container.appendChild(createModelVisibilityCard());
 
   async function loadSettings(): Promise<void> {

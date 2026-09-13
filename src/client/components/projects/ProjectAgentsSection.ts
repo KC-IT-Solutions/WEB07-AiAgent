@@ -172,6 +172,10 @@ interface ClientAgentSafeError {
   errorCode?: string;
   errorName?: string;
   errorMessage?: string;
+  actualCharacters?: number;
+  limitCharacters?: number;
+  actualBytes?: number;
+  limitBytes?: number;
 }
 
 interface ClientAgentError extends ClientAgentSafeError {
@@ -194,6 +198,21 @@ function parseInferenceNumber(value: string): number {
   const num = Number(value.replace(',', '.'));
   if (!Number.isFinite(num) || num < 0 || num > 1) return DEFAULT_AGENT_TEMPERATURE;
   return num;
+}
+
+function formatGroupedInteger(value: number): string {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function formatCharacterSize(value: number): string {
+  return `${formatGroupedInteger(value)} characters`;
+}
+
+function formatByteSize(value: number): string {
+  if (value < 1024) return `${formatGroupedInteger(value)} B`;
+  const unit = value < 1024 * 1024 ? 'KiB' : 'MiB';
+  const divisor = unit === 'KiB' ? 1024 : 1024 * 1024;
+  return `${(value / divisor).toFixed(1)} ${unit} (${formatGroupedInteger(value)} bytes)`;
 }
 
 let agentEditorId = 0;
@@ -1472,6 +1491,19 @@ export function createProjectAgentsSection(projectId: number): HTMLElement {
             ...(typeof value.errorMessage === 'string'
               ? { errorMessage: value.errorMessage }
               : {}),
+            ...(Number.isSafeInteger(value.actualCharacters) &&
+            Number(value.actualCharacters) >= 0
+              ? { actualCharacters: Number(value.actualCharacters) }
+              : {}),
+            ...(Number.isSafeInteger(value.limitCharacters) && Number(value.limitCharacters) >= 0
+              ? { limitCharacters: Number(value.limitCharacters) }
+              : {}),
+            ...(Number.isSafeInteger(value.actualBytes) && Number(value.actualBytes) >= 0
+              ? { actualBytes: Number(value.actualBytes) }
+              : {}),
+            ...(Number.isSafeInteger(value.limitBytes) && Number(value.limitBytes) >= 0
+              ? { limitBytes: Number(value.limitBytes) }
+              : {}),
           },
         ];
       });
@@ -1491,7 +1523,40 @@ export function createProjectAgentsSection(projectId: number): HTMLElement {
         const message = document.createElement('p');
         message.textContent = error.message;
         entry.append(timestamp, runLabel, stage, message);
-        const diagnostics = [
+        const sizeDiagnostics: Array<[string, string]> = [];
+        if (error.actualCharacters !== undefined) {
+          sizeDiagnostics.push(['Actual size', formatCharacterSize(error.actualCharacters)]);
+        }
+        if (error.limitCharacters !== undefined) {
+          sizeDiagnostics.push(['Limit', formatCharacterSize(error.limitCharacters)]);
+        }
+        if (
+          error.actualCharacters !== undefined &&
+          error.limitCharacters !== undefined &&
+          error.actualCharacters > error.limitCharacters
+        ) {
+          sizeDiagnostics.push([
+            'Exceeded by',
+            formatCharacterSize(error.actualCharacters - error.limitCharacters),
+          ]);
+        }
+        if (error.actualBytes !== undefined) {
+          sizeDiagnostics.push(['Actual size', formatByteSize(error.actualBytes)]);
+        }
+        if (error.limitBytes !== undefined) {
+          sizeDiagnostics.push(['Limit', formatByteSize(error.limitBytes)]);
+        }
+        if (
+          error.actualBytes !== undefined &&
+          error.limitBytes !== undefined &&
+          error.actualBytes > error.limitBytes
+        ) {
+          sizeDiagnostics.push([
+            'Exceeded by',
+            formatByteSize(error.actualBytes - error.limitBytes),
+          ]);
+        }
+        const diagnostics: Array<[string, string | number]> = [
           ['Tool', error.toolName],
           ['Input file', error.inputFile],
           ['Call', error.callIndex],
@@ -1500,6 +1565,7 @@ export function createProjectAgentsSection(projectId: number): HTMLElement {
           ['Error message', error.errorMessage],
           ['Arguments', error.arguments],
         ].filter((item): item is [string, string | number] => item[1] !== undefined);
+        diagnostics.push(...sizeDiagnostics);
         if (diagnostics.length > 0) {
           const details = document.createElement('dl');
           for (const [label, value] of diagnostics) {
@@ -1591,12 +1657,10 @@ export function createProjectAgentsSection(projectId: number): HTMLElement {
     descriptionInput.value = agent?.description ?? '';
     const instructionsInput = document.createElement('textarea');
     instructionsInput.rows = 8;
-    instructionsInput.maxLength = 20000;
     instructionsInput.value = agent?.instructions ?? '';
     instructionsInput.placeholder = 'Describe how this Agent should behave.';
     const assignmentInput = document.createElement('textarea');
     assignmentInput.rows = 6;
-    assignmentInput.maxLength = 20000;
     assignmentInput.value = agent?.assignment ?? '';
     assignmentInput.placeholder = 'Describe what this Agent should do when started.';
     const instructionSource = agent?.instructionSource ?? 'none';

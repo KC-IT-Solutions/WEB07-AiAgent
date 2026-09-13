@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
+import { AGENT_RUNTIME_LIMITS_DEFAULTS } from '../../src/server/runtime-limits.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -772,6 +773,9 @@ await describe('Chat inference API', () => {
       const meResponse = await fetch(`${APP_URL}/api/me`);
       assert.deepEqual(await meResponse.json(), { isAdmin: false });
       const getResponse = await fetch(`${APP_URL}/api/admin/settings/logging`);
+      const runtimeGetResponse = await fetch(
+        `${APP_URL}/api/admin/settings/agent-runtime-limits`,
+      );
       const putResponse = await fetch(`${APP_URL}/api/admin/settings/logging`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -779,9 +783,49 @@ await describe('Chat inference API', () => {
       });
       assert.equal(getResponse.status, 403);
       assert.equal(putResponse.status, 403);
+      assert.equal(runtimeGetResponse.status, 403);
       assert.deepEqual(await getResponse.json(), { error: 'Forbidden' });
     } finally {
       process.env.DEFAULT_USER_ID = '1';
     }
+  });
+
+  it('persists validated Agent runtime limits through the admin API', async () => {
+    const initialResponse = await fetch(`${APP_URL}/api/admin/settings/agent-runtime-limits`);
+    assert.equal(initialResponse.status, 200);
+    const initialConfiguration = (await initialResponse.json()) as {
+      limits: unknown;
+      defaults: unknown;
+      bounds: unknown;
+    };
+    assert.deepEqual(initialConfiguration.limits, AGENT_RUNTIME_LIMITS_DEFAULTS);
+    assert.deepEqual(initialConfiguration.defaults, AGENT_RUNTIME_LIMITS_DEFAULTS);
+    assert.equal(typeof initialConfiguration.bounds, 'object');
+
+    const limits = {
+      ...AGENT_RUNTIME_LIMITS_DEFAULTS,
+      toolResultCharacters: 48_000,
+      assignmentCharacters: 120_000,
+      inlineInstructionsCharacters: 24_000,
+      attachedFileBytes: 300 * 1024,
+      attachedFilesTotalBytes: 2 * 1024 * 1024,
+    };
+    const updateResponse = await fetch(`${APP_URL}/api/admin/settings/agent-runtime-limits`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(limits),
+    });
+    assert.equal(updateResponse.status, 200);
+    assert.deepEqual(await updateResponse.json(), limits);
+
+    const invalidResponse = await fetch(`${APP_URL}/api/admin/settings/agent-runtime-limits`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...limits, attachedFilesTotalBytes: limits.attachedFileBytes - 1 }),
+    });
+    assert.equal(invalidResponse.status, 400);
+    const reloadedResponse = await fetch(`${APP_URL}/api/admin/settings/agent-runtime-limits`);
+    const reloaded = (await reloadedResponse.json()) as { limits: unknown };
+    assert.deepEqual(reloaded.limits, limits);
   });
 });

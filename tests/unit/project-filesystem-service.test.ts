@@ -75,6 +75,8 @@ await describe('ProjectFilesystemService', () => {
           { name: 'z.txt', type: 'file' },
         ],
       );
+      assert.equal(rootListing.entries.find((entry) => entry.name === 'src')?.size, undefined);
+      assert.equal(rootListing.entries.find((entry) => entry.name === 'z.txt')?.size, 4);
       assert.ok(!JSON.stringify(rootListing).includes(fixture.temporaryRoot));
 
       const read = await fixture.filesystemService.readFile(
@@ -127,6 +129,7 @@ await describe('ProjectFilesystemService', () => {
       });
       const createdStat = await stat(textPath);
       let listing = await fixture.filesystemService.listDirectory(project.id, '');
+      assert.equal(listing.entries.find((entry) => entry.name === 'notes.txt')?.size, 7);
       assert.equal(
         listing.entries.find((entry) => entry.name === 'notes.txt')?.modifiedAt,
         Math.trunc(createdStat.mtimeMs),
@@ -142,6 +145,7 @@ await describe('ProjectFilesystemService', () => {
       await utimes(uploadPath, uploadTime, uploadTime);
       const uploadStat = await stat(uploadPath);
       listing = await fixture.filesystemService.listDirectory(project.id, '');
+      assert.equal(listing.entries.find((entry) => entry.name === 'upload.bin')?.size, 3);
       assert.equal(
         listing.entries.find((entry) => entry.name === 'upload.bin')?.modifiedAt,
         Math.trunc(uploadStat.mtimeMs),
@@ -156,6 +160,7 @@ await describe('ProjectFilesystemService', () => {
       });
       const rewrittenStat = await stat(textPath);
       listing = await fixture.filesystemService.listDirectory(project.id, '');
+      assert.equal(listing.entries.find((entry) => entry.name === 'notes.txt')?.size, 9);
       assert.notEqual(Math.trunc(rewrittenStat.mtimeMs), oldModifiedAt);
       assert.equal(
         listing.entries.find((entry) => entry.name === 'notes.txt')?.modifiedAt,
@@ -170,6 +175,7 @@ await describe('ProjectFilesystemService', () => {
       await writeTool.execute({ path: 'notes.txt', content: 'Agent update' });
       const agentWriteStat = await stat(textPath);
       listing = await fixture.filesystemService.listDirectory(project.id, '');
+      assert.equal(listing.entries.find((entry) => entry.name === 'notes.txt')?.size, 12);
       assert.notEqual(Math.trunc(agentWriteStat.mtimeMs), oldModifiedAt);
       assert.equal(
         listing.entries.find((entry) => entry.name === 'notes.txt')?.modifiedAt,

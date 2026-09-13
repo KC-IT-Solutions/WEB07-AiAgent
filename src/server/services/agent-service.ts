@@ -14,11 +14,14 @@ import type { AgentRunRepository } from '../repositories/agent-run-repository.js
 import type { AgentProjectFilesystemPermissions } from '../agent-types.js';
 import { isAgentPromptFilePath } from '../agent-prompt-file.js';
 import { RUN_AGENT_TOOL_NAME } from '../tool-types.js';
+import {
+  DEFAULT_AGENT_RUNTIME_LIMITS_PROVIDER,
+  type AgentRuntimeLimits,
+  type AgentRuntimeLimitsProvider,
+} from '../runtime-limits.js';
 
 const MAX_NAME_LENGTH = 120;
 const MAX_DESCRIPTION_LENGTH = 2_000;
-const MAX_INSTRUCTIONS_LENGTH = 20_000;
-const MAX_ASSIGNMENT_LENGTH = 20_000;
 const MAX_RESULT_PATH_LENGTH = 2_048;
 
 export const DEFAULT_AGENT_TIMEOUT_MINUTES = 30;
@@ -56,6 +59,7 @@ export type AgentServiceConstructor = new (
   tools: Pick<ToolRegistry, 'get'>,
   currentUserId: () => number,
   runs?: Pick<AgentRunRepository, 'getActive'>,
+  runtimeLimits?: AgentRuntimeLimitsProvider,
 ) => AgentService;
 
 function parseProjectFilesystemPermissions(value: unknown): AgentProjectFilesystemPermissions {
@@ -352,7 +356,11 @@ function parseInferenceParam(value: unknown): number | undefined {
   return value;
 }
 
-function parseInput(value: unknown, registry: Pick<ToolRegistry, 'get'>): AgentInput {
+function parseInput(
+  value: unknown,
+  registry: Pick<ToolRegistry, 'get'>,
+  runtimeLimits: AgentRuntimeLimits,
+): AgentInput {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new AgentError('INVALID_INPUT');
   }
@@ -397,7 +405,11 @@ function parseInput(value: unknown, registry: Pick<ToolRegistry, 'get'>): AgentI
   const triggerNextAgent = parseBoolean(input.triggerNextAgent, false);
   const saveResultToFile = parseBoolean(input.saveResultToFile, false);
   const instructionSource = parseInstructionSource(input.instructionSource);
-  const instructions = requireText(input.instructions, MAX_INSTRUCTIONS_LENGTH, true);
+  const instructions = requireText(
+    input.instructions,
+    runtimeLimits.inlineInstructionsCharacters,
+    true,
+  );
   const instructionFilePath =
     instructionSource === 'file'
       ? parsePromptFilePath(input.instructionFilePath, true)
@@ -424,7 +436,7 @@ function parseInput(value: unknown, registry: Pick<ToolRegistry, 'get'>): AgentI
     instructions,
     instructionFilePath,
     assignmentSource,
-    assignment: requireText(input.assignment, MAX_ASSIGNMENT_LENGTH, true),
+    assignment: requireText(input.assignment, runtimeLimits.assignmentCharacters, true),
     assignmentFilePath,
     modelConnectionId: Number(input.modelConnectionId),
     modelId: requireModelId(input.modelId),
@@ -473,6 +485,7 @@ export class AgentService {
     private readonly tools: Pick<ToolRegistry, 'get'>,
     private readonly currentUserId: () => number,
     private readonly runs?: Pick<AgentRunRepository, 'getActive'>,
+    private readonly runtimeLimits: AgentRuntimeLimitsProvider = DEFAULT_AGENT_RUNTIME_LIMITS_PROVIDER,
   ) {}
 
   async list(projectId: number): Promise<Agent[] | null> {
@@ -489,7 +502,7 @@ export class AgentService {
   }
 
   async create(projectId: number, value: unknown): Promise<Agent | null> {
-    const input = parseInput(value, this.tools);
+    const input = parseInput(value, this.tools, await this.runtimeLimits.getAgentRuntimeLimits());
     const userId = this.currentUserId();
     if (!this.projectRepository.getById(userId, projectId)) {
       return null;
@@ -542,7 +555,7 @@ export class AgentService {
   }
 
   async update(projectId: number, agentId: number, value: unknown): Promise<Agent | null> {
-    const input = parseInput(value, this.tools);
+    const input = parseInput(value, this.tools, await this.runtimeLimits.getAgentRuntimeLimits());
     const userId = this.currentUserId();
     if (!this.repository.get(userId, projectId, agentId)) {
       return null;

@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   formatProjectFileModifiedAt,
+  formatProjectFileSize,
   getFileMoveUpDestination,
 } from '../../src/client/components/projects/ProjectFilesSection.js';
 import {
@@ -714,6 +715,14 @@ await describe('Projects UI', () => {
       assert.ok(executionSource.includes(`'${label}'`));
     }
     assert.ok(executionSource.includes("fieldLabel.textContent = isCall ? 'Arguments:' : 'Result:'"));
+    assert.ok(executionSource.includes('structured.textContent = JSON.stringify(JSON.parse(json) as unknown, null, 2)'));
+    assert.equal(executionSource.includes('.slice('), false);
+    const storedResult = JSON.stringify({
+      observations: ['[ITEMS TRUNCATED]', { index: 1 }, { index: 200 }],
+    });
+    const renderedResult = JSON.stringify(JSON.parse(storedResult) as unknown, null, 2);
+    assert.ok(renderedResult.indexOf('[ITEMS TRUNCATED]') < renderedResult.indexOf('"index": 1'));
+    assert.ok(renderedResult.includes('"index": 200'));
     assert.ok(executionSource.includes("current.status === 'running' || current.status === 'paused'"));
     assert.ok(executionSource.includes('setTimeout(() => void refresh(), 1500)'));
     assert.ok(executionSource.includes('if (!modal.isConnected) return'));
@@ -1026,29 +1035,63 @@ await describe('Projects UI', () => {
     assert.ok(!formatterSource.includes('toLocale'));
   });
 
-  it('renders file-only modified time between the filename control and overflow menu', () => {
+  it('formats Project file sizes deterministically across byte, KB, and MB thresholds', () => {
+    assert.equal(formatProjectFileSize(0), '0 B');
+    assert.equal(formatProjectFileSize(1), '1 B');
+    assert.equal(formatProjectFileSize(512), '512 B');
+    assert.equal(formatProjectFileSize(1023), '1023 B');
+    assert.equal(formatProjectFileSize(1024), '1 KB');
+    assert.equal(formatProjectFileSize(1536), '1.5 KB');
+    assert.equal(formatProjectFileSize(24_900), '24.3 KB');
+    assert.equal(formatProjectFileSize(1_048_575), '1024 KB');
+    assert.equal(formatProjectFileSize(1_048_576), '1 MB');
+    assert.equal(formatProjectFileSize(1_572_864), '1.5 MB');
+    assert.equal(formatProjectFileSize(2_516_582), '2.4 MB');
+    assert.equal(formatProjectFileSize(undefined), null);
+    assert.equal(formatProjectFileSize(-1), null);
+    assert.equal(formatProjectFileSize(1.5), null);
+    assert.equal(formatProjectFileSize(Number.NaN), null);
+    assert.equal(formatProjectFileSize(Number.POSITIVE_INFINITY), null);
+
+    const formatterSource = filesView.slice(
+      filesView.indexOf('export function formatProjectFileSize('),
+      filesView.indexOf('export function getFileMoveUpDestination('),
+    );
+    assert.ok(!formatterSource.includes('toLocale'));
+    assert.ok(!formatterSource.includes('Intl.'));
+  });
+
+  it('renders file-only size and modified time between the filename control and overflow menu', () => {
     const rowSource = filesView.slice(
       filesView.indexOf("const openButton = document.createElement('button')"),
       filesView.indexOf('list.appendChild(item);'),
     );
+    assert.ok(rowSource.includes("fileSize.className = 'project-file-size'"));
+    assert.ok(rowSource.includes("entry.type === 'file' ? formatProjectFileSize(entry.size) : null"));
     assert.ok(rowSource.includes("modifiedTime.className = 'project-file-modified-at'"));
     assert.ok(rowSource.includes("entry.type === 'file' ? entry.modifiedAt : undefined"));
-    assert.ok(rowSource.indexOf('item.appendChild(openButton)') < rowSource.indexOf('item.appendChild(modifiedTime)'));
+    assert.ok(rowSource.indexOf('item.appendChild(openButton)') < rowSource.indexOf('item.appendChild(fileSize)'));
+    assert.ok(rowSource.indexOf('item.appendChild(fileSize)') < rowSource.indexOf('item.appendChild(modifiedTime)'));
     assert.ok(rowSource.indexOf('item.appendChild(modifiedTime)') < rowSource.indexOf('item.appendChild(actions)'));
     assert.ok(rowSource.includes("actionsButton.textContent = '...'"));
+    assert.ok(css.includes('.project-file-size'));
     assert.ok(css.includes('.project-file-modified-at'));
+    assert.ok(!css.match(/\.project-file-size\s*\{[^}]*width:/s));
     assert.ok(!css.match(/\.project-file-modified-at\s*\{[^}]*width:/s));
   });
 
-  it('tolerates absent or invalid modified metadata without rejecting file rows', () => {
+  it('tolerates absent or invalid optional file metadata without rejecting file rows', () => {
     const parserSource = filesView.slice(
       filesView.indexOf('function parseEntry('),
       filesView.indexOf('function parseListing('),
     );
+    assert.ok(parserSource.includes("value.type === 'file' && isValidFileSize(value.size)"));
+    assert.ok(!parserSource.includes("typeof value.size !== 'number'"));
     assert.ok(parserSource.includes("typeof value.modifiedAt === 'number'"));
     assert.ok(parserSource.includes('Number.isFinite(value.modifiedAt)'));
     assert.ok(parserSource.includes('? { modifiedAt: value.modifiedAt }'));
     assert.ok(!parserSource.includes("typeof value.modifiedAt !== 'number'"));
+    assert.ok(filesView.includes('if (formattedSize)'));
     assert.ok(filesView.includes('if (modifiedTimestamp && modifiedAt !== undefined)'));
   });
 
@@ -1110,6 +1153,7 @@ await describe('Projects UI', () => {
     assert.equal(uploadSource.includes('currentPath ='), false);
     assert.ok(filesView.includes('section.replaceChildren()'));
     assert.ok(filesView.includes('list.appendChild(item)'));
+    assert.ok(filesView.includes('fileSize.textContent = formattedSize'));
     assert.ok(filesView.includes('modifiedTime.textContent = modifiedTimestamp'));
     assert.ok(filesView.includes('openActionMenu(entry, actions, actionsButton, status)'));
   });
@@ -2185,5 +2229,35 @@ await describe('Projects UI', () => {
     assert.ok(errorSource.includes("['Tool', error.toolName]"));
     assert.ok(errorSource.includes("['Input file', error.inputFile]"));
     assert.ok(errorSource.includes("['Call', error.callIndex]"));
+  });
+
+  it('renders generic character and byte size metadata with deterministic exceeded-by values', () => {
+    const errorSource = agentsView.slice(
+      agentsView.indexOf('async function openErrorLog('),
+      agentsView.indexOf('async function startAgent('),
+    );
+    for (const field of [
+      'actualCharacters',
+      'limitCharacters',
+      'actualBytes',
+      'limitBytes',
+    ]) {
+      assert.ok(errorSource.includes(`value.${field}`));
+      assert.ok(errorSource.includes(`error.${field}`));
+    }
+    assert.ok(agentsView.includes("replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',')"));
+    assert.ok(agentsView.includes("return `${formatGroupedInteger(value)} characters`"));
+    assert.ok(agentsView.includes("const unit = value < 1024 * 1024 ? 'KiB' : 'MiB'"));
+    assert.ok(errorSource.includes("sizeDiagnostics.push(['Actual size'"));
+    assert.ok(errorSource.includes("sizeDiagnostics.push(['Limit'"));
+    assert.ok(errorSource.includes("'Exceeded by'"));
+    assert.ok(errorSource.includes('error.actualCharacters > error.limitCharacters'));
+    assert.ok(errorSource.includes('error.actualBytes > error.limitBytes'));
+    assert.ok(!errorSource.includes('TOOL_RESULT_TOO_LARGE'));
+  });
+
+  it('does not retain obsolete fixed inline Agent editor limits', () => {
+    assert.ok(!agentsView.includes('instructionsInput.maxLength = 20000'));
+    assert.ok(!agentsView.includes('assignmentInput.maxLength = 20000'));
   });
 });

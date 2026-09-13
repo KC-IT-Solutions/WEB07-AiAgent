@@ -90,6 +90,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isValidFileSize(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 function isSafeRelativePath(value: unknown, allowRoot: boolean): value is string {
   if (typeof value !== 'string') {
     return false;
@@ -113,9 +117,7 @@ function parseEntry(value: unknown): ClientProjectFileEntry | null {
     value.name.includes('/') ||
     value.name.includes('\\') ||
     !isSafeRelativePath(value.relativePath, false) ||
-    (value.type !== 'file' && value.type !== 'directory') ||
-    (value.type === 'file' &&
-      (typeof value.size !== 'number' || !Number.isSafeInteger(value.size) || value.size < 0))
+    (value.type !== 'file' && value.type !== 'directory')
   ) {
     return null;
   }
@@ -123,7 +125,7 @@ function parseEntry(value: unknown): ClientProjectFileEntry | null {
     name: value.name,
     relativePath: value.relativePath,
     type: value.type,
-    ...(value.type === 'file' ? { size: value.size as number } : {}),
+    ...(value.type === 'file' && isValidFileSize(value.size) ? { size: value.size } : {}),
     ...(typeof value.modifiedAt === 'number' && Number.isFinite(value.modifiedAt)
       ? { modifiedAt: value.modifiedAt }
       : {}),
@@ -197,6 +199,20 @@ export function formatProjectFileModifiedAt(modifiedAt: number | undefined): str
   }
   const pad = (value: number): string => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export function formatProjectFileSize(size: unknown): string | null {
+  if (!isValidFileSize(size)) {
+    return null;
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  const mebibyte = 1024 * 1024;
+  const divisor = size < mebibyte ? 1024 : mebibyte;
+  const unit = size < mebibyte ? 'KB' : 'MB';
+  const rounded = Math.round((size / divisor) * 10) / 10;
+  return `${rounded} ${unit}`;
 }
 
 export function getFileMoveUpDestination(sourcePath: string): string | null {
@@ -802,6 +818,13 @@ export function createProjectFilesSection(projectId: number): HTMLElement {
           }
         });
         item.appendChild(openButton);
+        const formattedSize = entry.type === 'file' ? formatProjectFileSize(entry.size) : null;
+        if (formattedSize) {
+          const fileSize = document.createElement('span');
+          fileSize.className = 'project-file-size';
+          fileSize.textContent = formattedSize;
+          item.appendChild(fileSize);
+        }
         const modifiedAt = entry.type === 'file' ? entry.modifiedAt : undefined;
         const modifiedTimestamp = formatProjectFileModifiedAt(modifiedAt);
         if (modifiedTimestamp && modifiedAt !== undefined) {

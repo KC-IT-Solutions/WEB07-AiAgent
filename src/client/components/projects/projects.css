@@ -937,6 +937,7 @@ button.project-agent-status-error:focus-visible {
   white-space: nowrap;
 }
 
+.project-file-size,
 .project-file-modified-at {
   flex: 0 1 auto;
   color: #718096;

@@ -37,6 +37,11 @@ import {
 import type { StructuredLogger } from '../logging/logger.js';
 import type { LmStudioModelLifecycleService } from './lm-studio-model-lifecycle.js';
 import { isAgentPromptFilePath } from '../agent-prompt-file.js';
+import {
+  DEFAULT_AGENT_RUNTIME_LIMITS_PROVIDER,
+  type AgentRuntimeLimits,
+  type AgentRuntimeLimitsProvider,
+} from '../runtime-limits.js';
 
 function formatLocalCalendarDate(date: Date): string {
   const year = String(date.getFullYear()).padStart(4, '0');
@@ -44,12 +49,6 @@ function formatLocalCalendarDate(date: Date): string {
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
-
-const MAX_TASK_LENGTH = 100_000;
-const MAX_INLINE_INSTRUCTIONS_LENGTH = 20_000;
-const MAX_TOOL_RESULT_LENGTH = 32_000;
-const MAX_ATTACHED_FILE_BYTES = 256 * 1024;
-const MAX_ATTACHED_FILES_TOTAL_BYTES = 1024 * 1024;
 
 const DEFAULT_AGENT_TIMEOUT_MINUTES = 30;
 const DEFAULT_AGENT_TEMPERATURE = 0.8;
@@ -87,6 +86,7 @@ interface ActiveExecution {
   controller: AbortController;
   wake: (() => void) | null;
   agentAncestry: ReadonlySet<number>;
+  runtimeLimits: Readonly<AgentRuntimeLimits>;
 }
 
 class ExecutionStopped extends Error {}
@@ -124,6 +124,7 @@ class AttachedFilesTotalTooLargeError extends Error {
   constructor(
     readonly actualBytes: number,
     readonly limitBytes: number,
+    readonly inputFile: string,
   ) {
     super('Attached files too large');
   }
@@ -190,6 +191,9 @@ class PreRunInitializationError extends Error {
       ...(typeof sourceRecord?.code === 'string'
         ? { errorCode: safeExecutionText(sourceRecord.code) }
         : { errorCode: code }),
+      ...(typeof sourceRecord?.limitBytes === 'number'
+        ? { limitBytes: sourceRecord.limitBytes }
+        : {}),
       errorName: safeExecutionText(sourceError?.name ?? this.name),
       errorMessage: safeExecutionText(sourceError?.message ?? this.message),
     };
@@ -212,13 +216,14 @@ interface PreRunToolResult {
 function serializeModelToolResult(
   value: unknown,
   context: { toolName: string; inputFile?: string; callIndex?: number },
+  limitCharacters: number,
 ): string {
   const serialized = JSON.stringify(value) ?? 'null';
-  if (serialized.length > MAX_TOOL_RESULT_LENGTH) {
+  if (serialized.length > limitCharacters) {
     throw new ToolResultTooLargeError(
       context.toolName,
       serialized.length,
-      MAX_TOOL_RESULT_LENGTH,
+      limitCharacters,
       context.inputFile,
       context.callIndex,
     );
@@ -285,10 +290,10 @@ function toRun(record: AgentRunRecord): AgentRun {
   };
 }
 
-function requireEffectiveAssignment(value: string): string {
+function requireEffectiveAssignment(value: string, limitCharacters: number): string {
   const task = value.trim();
-  if (task.length > MAX_TASK_LENGTH) {
-    throw new AssignmentTooLargeError(task.length, MAX_TASK_LENGTH);
+  if (task.length > limitCharacters) {
+    throw new AssignmentTooLargeError(task.length, limitCharacters);
   }
   if (task.length === 0) {
     throw new AgentRunError('INVALID_INPUT');
@@ -319,6 +324,7 @@ export class AgentRunService {
     private readonly logger?: Pick<StructuredLogger, 'model'>,
     private readonly modelLifecycle?: LmStudioModelLifecycleService,
     private readonly now: () => Date = () => new Date(),
+    private readonly runtimeLimits: AgentRuntimeLimitsProvider = DEFAULT_AGENT_RUNTIME_LIMITS_PROVIDER,
   ) {}
 
   normalizeInterruptedRuns(): number {
@@ -334,9 +340,12 @@ export class AgentRunService {
     const userId = this.currentUserId();
     const agent = this.agents.get(userId, projectId, agentId);
     if (!agent) throw new AgentRunError('AGENT_NOT_FOUND');
+    const runtimeLimits = Object.freeze({
+      ...(await this.runtimeLimits.getAgentRuntimeLimits()),
+    });
     let task: string;
     try {
-      task = await this.resolveAssignment(projectId, agent);
+      task = await this.resolveAssignment(projectId, agent, runtimeLimits);
     } catch (error) {
       if (
         agent.data.assignmentSource !== 'file' &&
@@ -359,6 +368,7 @@ export class AgentRunService {
         this.toSafeError(
           agent.data.assignmentSource === 'file' ? 'assignment_file_load' : 'assignment_resolution',
           error,
+          agent.data.assignmentSource === 'file' ? agent.data.assignmentFilePath : undefined,
         ),
       );
       const stored = this.runs.getById(userId, projectId, agentId, failed.id);
@@ -376,7 +386,7 @@ export class AgentRunService {
     }
     if (!created) throw new AgentRunError('AGENT_NOT_FOUND');
 
-    void this.launch(userId, created, new Set([created.agentId]));
+    void this.launch(userId, created, new Set([created.agentId]), runtimeLimits);
     return toRun(created);
   }
 
@@ -384,11 +394,13 @@ export class AgentRunService {
     userId: number,
     run: AgentRunRecord,
     agentAncestry: ReadonlySet<number>,
+    runtimeLimits: Readonly<AgentRuntimeLimits>,
   ): Promise<void> {
     const execution: ActiveExecution = {
       controller: new AbortController(),
       wake: null,
       agentAncestry,
+      runtimeLimits,
     };
     this.activeExecutions.set(run.id, execution);
     return this.execute(userId, run, execution)
@@ -528,6 +540,7 @@ export class AgentRunService {
     execution: ActiveExecution,
   ): Promise<void> {
     let stage = 'configuration_load';
+    let instructionInputFile: string | undefined;
     try {
       await this.checkpoint(userId, run, execution);
       const agent = this.agents.get(userId, run.projectId, run.agentId);
@@ -537,13 +550,14 @@ export class AgentRunService {
       stage = 'instruction_file_load';
       let instructions = '';
       if (agent.data.instructionSource === 'file') {
+        instructionInputFile = agent.data.instructionFilePath;
         instructions = (await this.filesystem.readFile(run.projectId, agent.data.instructionFilePath)).content;
       } else if (agent.data.instructionSource === 'inline') {
         instructions = agent.data.instructions;
-        if (instructions.length > MAX_INLINE_INSTRUCTIONS_LENGTH) {
+        if (instructions.length > execution.runtimeLimits.inlineInstructionsCharacters) {
           throw new InstructionTooLargeError(
             instructions.length,
-            MAX_INLINE_INSTRUCTIONS_LENGTH,
+            execution.runtimeLimits.inlineInstructionsCharacters,
           );
         }
       }
@@ -636,23 +650,24 @@ export class AgentRunService {
           } catch (error) {
             if (error instanceof ProjectFilesystemError) {
               if (error.code === 'PROJECT_FILE_TOO_LARGE') {
-                throw new AttachedFileTooLargeError(filePath);
+                throw new AttachedFileTooLargeError(filePath, undefined, error.limitBytes);
               }
               throw new AttachedFileUnavailableError();
             }
             throw error;
           }
-          if (fileContent.size > MAX_ATTACHED_FILE_BYTES) {
+          if (fileContent.size > execution.runtimeLimits.attachedFileBytes) {
             throw new AttachedFileTooLargeError(
               filePath,
               fileContent.size,
-              MAX_ATTACHED_FILE_BYTES,
+              execution.runtimeLimits.attachedFileBytes,
             );
           }
-          if (aggregateSize + fileContent.size > MAX_ATTACHED_FILES_TOTAL_BYTES) {
+          if (aggregateSize + fileContent.size > execution.runtimeLimits.attachedFilesTotalBytes) {
             throw new AttachedFilesTotalTooLargeError(
               aggregateSize + fileContent.size,
-              MAX_ATTACHED_FILES_TOTAL_BYTES,
+              execution.runtimeLimits.attachedFilesTotalBytes,
+              filePath,
             );
           }
           attachedFiles.push({
@@ -923,7 +938,7 @@ export class AgentRunService {
           try {
             serializedResult = serializeModelToolResult(toolResult, {
               toolName: call.function.name,
-            });
+            }, execution.runtimeLimits.toolResultCharacters);
           } catch (error) {
             this.runs.addOperationalEvent(run.id, 'tool_call_failed', {
               toolName: call.function.name,
@@ -947,7 +962,14 @@ export class AgentRunService {
       }
     } catch (error) {
       if (error instanceof ExecutionStopped || execution.controller.signal.aborted) return;
-      this.runs.fail(run.id, this.toSafeError(stage, error));
+      this.runs.fail(
+        run.id,
+        this.toSafeError(
+          stage,
+          error,
+          stage === 'instruction_file_load' ? instructionInputFile : undefined,
+        ),
+      );
     }
   }
 
@@ -981,13 +1003,47 @@ export class AgentRunService {
       });
       return;
     }
+    const runtimeLimits = Object.freeze({
+      ...(await this.runtimeLimits.getAgentRuntimeLimits()),
+    });
     let assignment: string;
     try {
-      assignment = await this.resolveAssignment(run.projectId, nextAgent);
-    } catch {
+      assignment = await this.resolveAssignment(run.projectId, nextAgent, runtimeLimits);
+    } catch (error) {
+      const assignmentTooLarge =
+        error instanceof AssignmentTooLargeError ||
+        (error instanceof ProjectFilesystemError && error.code === 'PROJECT_FILE_TOO_LARGE');
+      if (assignmentTooLarge) {
+        try {
+          const failedRun = this.runs.transaction(() =>
+            this.runs.create(userId, run.projectId, nextAgentId, '', {
+              originalTask: run.data.originalTask,
+              triggeredByRunId: run.id,
+              previousAgentId: agent.id,
+              chainRootRunId: run.chainRootRunId ?? run.id,
+            }),
+          );
+          if (failedRun) {
+            this.runs.fail(
+              failedRun.id,
+              this.toSafeError(
+                nextAgent.data.assignmentSource === 'file'
+                  ? 'assignment_file_load'
+                  : 'assignment_resolution',
+                error,
+                nextAgent.data.assignmentSource === 'file'
+                  ? nextAgent.data.assignmentFilePath
+                  : undefined,
+              ),
+            );
+          }
+        } catch {
+          // The source run remains complete even if the target error cannot be persisted.
+        }
+      }
       this.runs.addOperationalEvent(run.id, 'next_agent_trigger_failed', {
         nextAgentId,
-        status: 'assignment_missing',
+        status: assignmentTooLarge ? 'assignment_too_large' : 'assignment_missing',
       });
       return;
     }
@@ -999,13 +1055,42 @@ export class AgentRunService {
       return;
     }
 
-    const handoffTask = this.buildHandoffTask(
-      assignment,
-      run.data.originalTask,
-      agent.id,
-      agent.data.name,
-      finalResult,
-    );
+    let handoffTask: string;
+    try {
+      handoffTask = requireEffectiveAssignment(
+        this.buildHandoffTask(
+          assignment,
+          run.data.originalTask,
+          agent.id,
+          agent.data.name,
+          finalResult,
+        ),
+        runtimeLimits.assignmentCharacters,
+      );
+    } catch (error) {
+      if (error instanceof AssignmentTooLargeError) {
+        try {
+          const failedRun = this.runs.transaction(() =>
+            this.runs.create(userId, run.projectId, nextAgentId, '', {
+              originalTask: run.data.originalTask,
+              triggeredByRunId: run.id,
+              previousAgentId: agent.id,
+              chainRootRunId: run.chainRootRunId ?? run.id,
+            }),
+          );
+          if (failedRun) {
+            this.runs.fail(failedRun.id, this.toSafeError('assignment_resolution', error));
+          }
+        } catch {
+          // The source run remains complete even if the target error cannot be persisted.
+        }
+      }
+      this.runs.addOperationalEvent(run.id, 'next_agent_trigger_failed', {
+        nextAgentId,
+        status: 'assignment_too_large',
+      });
+      return;
+    }
     let triggeredRun: AgentRunRecord;
     try {
       const created = this.runs.transaction(() =>
@@ -1042,7 +1127,12 @@ export class AgentRunService {
       triggeredByRunId: run.id,
       status: 'started',
     });
-    void this.launch(userId, triggeredRun, new Set([...agentAncestry, nextAgentId]));
+    void this.launch(
+      userId,
+      triggeredRun,
+      new Set([...agentAncestry, nextAgentId]),
+      runtimeLimits,
+    );
   }
 
   private async runConfiguredAgent(
@@ -1067,10 +1157,13 @@ export class AgentRunService {
     if (!targetAgent || this.runs.getActive(userId, callerRun.projectId, targetAgentId)) {
       return { status: 'Error' };
     }
+    const runtimeLimits = Object.freeze({
+      ...(await this.runtimeLimits.getAgentRuntimeLimits()),
+    });
 
     let assignment: string;
     try {
-      assignment = await this.resolveAssignment(callerRun.projectId, targetAgent);
+      assignment = await this.resolveAssignment(callerRun.projectId, targetAgent, runtimeLimits);
     } catch (error) {
       if (
         targetAgent.data.assignmentSource === 'file' ||
@@ -1093,6 +1186,9 @@ export class AgentRunService {
                   ? 'assignment_file_load'
                   : 'assignment_resolution',
                 error,
+                targetAgent.data.assignmentSource === 'file'
+                  ? targetAgent.data.assignmentFilePath
+                  : undefined,
               ),
             );
           }
@@ -1135,6 +1231,7 @@ export class AgentRunService {
       userId,
       targetRun,
       new Set([...execution.agentAncestry, targetAgentId]),
+      runtimeLimits,
     );
     try {
       await this.waitForTarget(launched, signal);
@@ -1186,15 +1283,19 @@ export class AgentRunService {
     });
   }
 
-  private async resolveAssignment(projectId: number, agent: AgentRecord): Promise<string> {
+  private async resolveAssignment(
+    projectId: number,
+    agent: AgentRecord,
+    runtimeLimits: Readonly<AgentRuntimeLimits>,
+  ): Promise<string> {
     if (agent.data.assignmentSource === 'inline') {
-      return requireEffectiveAssignment(agent.data.assignment);
+      return requireEffectiveAssignment(agent.data.assignment, runtimeLimits.assignmentCharacters);
     }
     if (!isAgentPromptFilePath(agent.data.assignmentFilePath)) {
       throw new Error('Invalid configured assignment file');
     }
     const file = await this.filesystem.readFile(projectId, agent.data.assignmentFilePath);
-    return requireEffectiveAssignment(file.content);
+    return requireEffectiveAssignment(file.content, runtimeLimits.assignmentCharacters);
   }
 
   private buildHandoffTask(
@@ -1397,7 +1498,7 @@ export class AgentRunService {
             toolName: configuration.toolName,
             inputFile: configuration.preRunInputFile,
             callIndex,
-          });
+          }, execution.runtimeLimits.toolResultCharacters);
         } catch (error) {
           this.runs.addOperationalEvent(run.id, 'pre_run_tool_call_failed', {
             toolName: configuration.toolName,
@@ -1510,7 +1611,11 @@ export class AgentRunService {
     if (!current || current.status !== 'running') throw new ExecutionStopped();
   }
 
-  private toSafeError(stage: string, error: unknown): AgentRunSafeError {
+  private toSafeError(
+    stage: string,
+    error: unknown,
+    inputFile?: string,
+  ): AgentRunSafeError {
     if (error instanceof ToolResultTooLargeError) {
       return {
         stage,
@@ -1544,12 +1649,15 @@ export class AgentRunService {
         stage,
         code: 'INSTRUCTION_TOO_LARGE',
         message: 'The configured Agent instructions are too large.',
+        ...(inputFile ? { inputFile: safeExecutionText(inputFile) } : {}),
         ...(error instanceof InstructionTooLargeError
           ? {
               actualCharacters: error.actualCharacters,
               limitCharacters: error.limitCharacters,
             }
-          : {}),
+          : error instanceof ProjectFilesystemError && error.limitBytes !== undefined
+            ? { limitBytes: error.limitBytes }
+            : {}),
       };
     }
     if (stage === 'instruction_file_load' && error instanceof ProjectFilesystemError) {
@@ -1568,11 +1676,15 @@ export class AgentRunService {
           stage,
           code: 'ASSIGNMENT_TOO_LARGE',
           message: 'The configured Agent assignment is too large.',
+          ...(inputFile ? { inputFile: safeExecutionText(inputFile) } : {}),
           ...(error instanceof AssignmentTooLargeError && error.actualCharacters !== undefined
             ? { actualCharacters: error.actualCharacters }
             : {}),
           ...(error instanceof AssignmentTooLargeError && error.limitCharacters !== undefined
             ? { limitCharacters: error.limitCharacters }
+            : {}),
+          ...(error instanceof ProjectFilesystemError && error.limitBytes !== undefined
+            ? { limitBytes: error.limitBytes }
             : {}),
         };
       }
@@ -1614,6 +1726,7 @@ export class AgentRunService {
           stage,
           code: 'ATTACHED_FILES_TOO_LARGE',
           message: 'The configured attached Project files are too large in total.',
+          inputFile: safeExecutionText(error.inputFile),
           actualBytes: error.actualBytes,
           limitBytes: error.limitBytes,
         };

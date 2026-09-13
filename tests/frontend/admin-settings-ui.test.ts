@@ -79,6 +79,74 @@ await describe('Admin Settings UI', async () => {
     assert.ok(!adminView.includes('userId'));
   });
 
+  await it('renders all Agent runtime limit inputs with required labels, units, and defaults', () => {
+    assert.ok(adminView.includes("heading.textContent = 'Agent runtime limits'"));
+    for (const label of [
+      'Tool result for model context (characters)',
+      'Effective Agent assignment (characters)',
+      'Inline Agent instructions (characters)',
+      'Attached Project file (KiB)',
+      'Attached Project files total (KiB)',
+    ]) {
+      assert.ok(adminView.includes(`'${label}'`));
+    }
+    for (const id of [
+      'admin-agent-tool-result-characters',
+      'admin-agent-assignment-characters',
+      'admin-agent-inline-instructions-characters',
+      'admin-agent-attached-file-kib',
+      'admin-agent-attached-files-total-kib',
+    ]) {
+      assert.ok(adminView.includes(`'${id}'`));
+    }
+    assert.ok(adminView.includes('configuration.defaults'));
+    assert.ok(adminView.includes('defaultValue.textContent = `Default:'));
+    assert.ok(adminView.includes("input.type = 'number'"));
+    assert.ok(adminView.includes('input.required = true'));
+  });
+
+  await it('uses hard frontend bounds and exact KiB conversion for runtime limits', () => {
+    assert.ok(adminView.includes('configuration.bounds[key].min'));
+    assert.ok(adminView.includes('configuration.bounds[key].max'));
+    assert.ok(adminView.includes("input.step = '1'"));
+    assert.ok(adminView.includes('attachedFile.input.valueAsNumber * KIBIBYTE'));
+    assert.ok(adminView.includes('attachedFilesTotal.input.valueAsNumber * KIBIBYTE'));
+    assert.ok(adminView.includes('limits.attachedFileBytes / KIBIBYTE'));
+    assert.ok(adminView.includes('limits.attachedFilesTotalBytes / KIBIBYTE'));
+    assert.ok(adminView.includes('value.attachedFilesTotalBytes < value.attachedFileBytes'));
+    assert.ok(!adminView.includes('toolResultCharacters: 32_000'));
+  });
+
+  await it('loads and saves runtime limits through the dedicated admin route with safe parsing', () => {
+    const routeMatches = adminView.match(/'\/api\/admin\/settings\/agent-runtime-limits'/g);
+    assert.equal(routeMatches?.length, 2);
+    assert.ok(adminView.includes("method: 'PUT'"));
+    assert.ok(adminView.includes('const limits = readForm()'));
+    assert.ok(adminView.includes('parseAgentRuntimeLimits((await response.json()) as unknown)'));
+    assert.ok(
+      adminView.includes(
+        "setStatus('The server rejected these runtime limits. Check each value.', true)",
+      ),
+    );
+    assert.ok(adminView.includes("setStatus('Failed to load Agent runtime limits.', true)"));
+  });
+
+  await it('resets only runtime form values and requires an explicit save', () => {
+    const runtimeCard = adminView.slice(
+      adminView.indexOf('function createAgentRuntimeLimitsCard'),
+      adminView.indexOf('function createLogTypeControl'),
+    );
+    const resetHandler = runtimeCard.slice(
+      runtimeCard.indexOf("resetButton.addEventListener('click'"),
+      runtimeCard.indexOf("form.addEventListener('submit'"),
+    );
+    assert.ok(resetHandler.includes('populate(defaults)'));
+    assert.ok(resetHandler.includes('Save to apply them.'));
+    assert.ok(!resetHandler.includes('fetch('));
+    assert.ok(runtimeCard.includes("resetButton.type = 'button'"));
+    assert.ok(runtimeCard.includes("saveButton.type = 'submit'"));
+  });
+
   await it('renders per-connection model visibility controls without an explicit save button', () => {
     assert.ok(adminView.includes("heading.textContent = 'Model visibility'"));
     assert.ok(adminView.includes("showAllLabel.textContent = 'Show all discovered models'"));

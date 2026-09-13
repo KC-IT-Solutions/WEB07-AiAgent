@@ -38,6 +38,7 @@ import {
 } from './server/services/chat-settings-service.js';
 import { SystemSettingsRepository } from './server/repositories/system-settings-repository.js';
 import {
+  AgentRuntimeSettingsError,
   SystemSettingsError,
   SystemSettingsService,
 } from './server/services/system-settings-service.js';
@@ -238,6 +239,7 @@ const agentService = new AgentService(
   toolRegistry,
   currentUserId,
   agentRunRepository,
+  systemSettingsService,
 );
 const agentRunService = new AgentRunService(
   agentRunRepository,
@@ -252,6 +254,8 @@ const agentRunService = new AgentRunService(
   toolSettingsService,
   logger,
   lmStudioModelLifecycleService,
+  undefined,
+  systemSettingsService,
 );
 agentRunService.normalizeInterruptedRuns();
 const chatCommandService = new ChatCommandService(
@@ -837,6 +841,42 @@ app.put('/api/admin/settings/logging', async (req: Request, res: Response) => {
       error: error instanceof Error ? error.message : 'Unknown settings error',
     });
     res.status(500).json({ error: 'Failed to update logging settings' });
+  }
+});
+
+app.get('/api/admin/settings/agent-runtime-limits', async (_req, res: Response) => {
+  if (!authorizationService.isCurrentUserAdmin()) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
+  try {
+    res.json(await systemSettingsService.getAgentRuntimeLimitsConfiguration());
+  } catch (error) {
+    await logger.application('error', 'admin_agent_runtime_limits_read_failed', {
+      error: error instanceof Error ? error.message : 'Unknown settings error',
+    });
+    res.status(500).json({ error: 'Failed to get Agent runtime limits' });
+  }
+});
+
+app.put('/api/admin/settings/agent-runtime-limits', async (req: Request, res: Response) => {
+  if (!authorizationService.isCurrentUserAdmin()) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
+  try {
+    const limits = await systemSettingsService.updateAgentRuntimeLimits(req.body as unknown);
+    await logger.application('info', 'admin_agent_runtime_limits_updated', { ...limits });
+    res.json(limits);
+  } catch (error) {
+    if (error instanceof AgentRuntimeSettingsError) {
+      res.status(400).json({ error: 'Invalid Agent runtime limits' });
+      return;
+    }
+    await logger.application('error', 'admin_agent_runtime_limits_update_failed', {
+      error: error instanceof Error ? error.message : 'Unknown settings error',
+    });
+    res.status(500).json({ error: 'Failed to update Agent runtime limits' });
   }
 });
 

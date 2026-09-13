@@ -5,6 +5,7 @@ import { AgentRepository } from '../../src/server/repositories/agent-repository.
 import { AgentRunRepository } from '../../src/server/repositories/agent-run-repository.js';
 import { ProjectRepository } from '../../src/server/repositories/project-repository.js';
 import { AgentError, AgentService } from '../../src/server/services/agent-service.js';
+import { AGENT_RUNTIME_LIMITS_DEFAULTS } from '../../src/server/runtime-limits.js';
 
 const input = {
   name: ' Agent ',
@@ -38,6 +39,48 @@ function visibleConnection(id = 9) {
 }
 
 await describe('AgentService', () => {
+  it('uses the configured coherent inline Assignment and Instructions policy', async () => {
+    const db = createTestDatabase();
+    const projects = new ProjectRepository(db);
+    const project = projects.create(1, { name: 'Project', description: '' });
+    const limit = 1_500;
+    const service = new AgentService(
+      new AgentRepository(db),
+      projects,
+      { getConnectionById: async () => visibleConnection(), isModelVisible: async () => true },
+      { listAvailable: async () => [] },
+      { get: () => null },
+      () => 1,
+      undefined,
+      {
+        getAgentRuntimeLimits: async () => ({
+          ...AGENT_RUNTIME_LIMITS_DEFAULTS,
+          assignmentCharacters: limit,
+          inlineInstructionsCharacters: limit,
+        }),
+      },
+    );
+    const base = { ...input, skillIds: [], toolNames: [] };
+
+    assert.ok(
+      await service.create(project.id, {
+        ...base,
+        assignment: 'a'.repeat(limit),
+        instructions: 'i'.repeat(limit),
+      }),
+    );
+    for (const oversized of [
+      { ...base, name: 'Assignment overflow', assignment: 'a'.repeat(limit + 1) },
+      { ...base, name: 'Instruction overflow', instructions: 'i'.repeat(limit + 1) },
+    ]) {
+      await assert.rejects(
+        () => service.create(project.id, oversized),
+        (error: unknown) => error instanceof AgentError && error.code === 'INVALID_INPUT',
+      );
+    }
+    db.close();
+  });
+
   it('defaults model selection off, validates references, toggles it, and preserves ownership', async () => {
     const db = createTestDatabase();
     const projects = new ProjectRepository(db);

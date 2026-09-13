@@ -30,9 +30,9 @@ function sanitizeStructuredValue(value: unknown, depth: number): unknown {
   if (typeof value === 'boolean' || value === null) return value;
   if (Array.isArray(value)) {
     const items = value
-      .slice(0, MAX_STRUCTURED_ITEMS)
+      .slice(-MAX_STRUCTURED_ITEMS)
       .map((item) => sanitizeStructuredValue(item, depth + 1));
-    if (value.length > MAX_STRUCTURED_ITEMS) items.push('[ITEMS TRUNCATED]');
+    if (value.length > MAX_STRUCTURED_ITEMS) items.unshift('[ITEMS TRUNCATED]');
     return items;
   }
   if (typeof value !== 'object') return String(value);

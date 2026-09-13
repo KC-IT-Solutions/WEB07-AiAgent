@@ -16,6 +16,10 @@ import {
 } from '../../src/server/tool-types.js';
 import type { Skill } from '../../src/server/skill-types.js';
 import type { AgentData } from '../../src/server/agent-types.js';
+import {
+  AGENT_RUNTIME_LIMITS_DEFAULTS,
+  type AgentRuntimeLimitsProvider,
+} from '../../src/server/runtime-limits.js';
 
 const connection = {
   id: 7,
@@ -94,6 +98,7 @@ function setup(
     filesystem?: Partial<TestFilesystem>;
     agentData?: Partial<AgentData>;
     testNow?: () => Date;
+    runtimeLimits?: AgentRuntimeLimitsProvider;
   } = {},
 ) {
   const db = createTestDatabase();
@@ -173,6 +178,7 @@ function setup(
     undefined,
     undefined,
     options.testNow,
+    options.runtimeLimits,
   );
   return { db, agents, runs, project, agent, queue, service, registry, skillRepository, skills };
 }
@@ -585,7 +591,7 @@ await describe('AgentRunService - Attached Project Files', () => {
 
   it('allows file exactly at per-file size limit', async () => {
     let inferenceCallCount = 0;
-    const exactSizeContent = 'x'.repeat(256 * 1024);
+    const exactSizeContent = 'x'.repeat(AGENT_RUNTIME_LIMITS_DEFAULTS.attachedFileBytes);
     const context = setup(
       async () => {
         inferenceCallCount += 1;
@@ -602,7 +608,11 @@ await describe('AgentRunService - Attached Project Files', () => {
         filesystem: {
           readFile: async (_projectId, path) => {
             if (path === 'large.txt') {
-              return { relativePath: 'large.txt', content: exactSizeContent, size: 256 * 1024 };
+              return {
+                relativePath: 'large.txt',
+                content: exactSizeContent,
+                size: AGENT_RUNTIME_LIMITS_DEFAULTS.attachedFileBytes,
+              };
             }
             throw new ProjectFilesystemError('PROJECT_FILE_NOT_FOUND');
           },
@@ -620,7 +630,9 @@ await describe('AgentRunService - Attached Project Files', () => {
 
   it('rejects file exceeding per-file size limit', async () => {
     let inferenceCallCount = 0;
-    const oversizedContent = 'x'.repeat(256 * 1024 + 1);
+    const oversizedContent = 'x'.repeat(
+      AGENT_RUNTIME_LIMITS_DEFAULTS.attachedFileBytes + 1,
+    );
     const context = setup(
       async () => {
         inferenceCallCount += 1;
@@ -637,7 +649,11 @@ await describe('AgentRunService - Attached Project Files', () => {
         filesystem: {
           readFile: async (_projectId, path) => {
             if (path === 'oversized.txt') {
-              return { relativePath: 'oversized.txt', content: oversizedContent, size: 256 * 1024 + 1 };
+              return {
+                relativePath: 'oversized.txt',
+                content: oversizedContent,
+                size: AGENT_RUNTIME_LIMITS_DEFAULTS.attachedFileBytes + 1,
+              };
             }
             throw new ProjectFilesystemError('PROJECT_FILE_NOT_FOUND');
           },
@@ -655,8 +671,11 @@ await describe('AgentRunService - Attached Project Files', () => {
     assert.equal(latestRun.safeError?.stage, 'attached_files_load');
     assert.equal(latestRun.safeError?.code, 'ATTACHED_FILE_TOO_LARGE');
     assert.equal(latestRun.safeError?.inputFile, 'oversized.txt');
-    assert.equal(latestRun.safeError?.actualBytes, 256 * 1024 + 1);
-    assert.equal(latestRun.safeError?.limitBytes, 256 * 1024);
+    assert.equal(
+      latestRun.safeError?.actualBytes,
+      AGENT_RUNTIME_LIMITS_DEFAULTS.attachedFileBytes + 1,
+    );
+    assert.equal(latestRun.safeError?.limitBytes, AGENT_RUNTIME_LIMITS_DEFAULTS.attachedFileBytes);
     context.db.close();
   });
 
@@ -689,7 +708,7 @@ await describe('AgentRunService - Attached Project Files', () => {
 
   it('allows multiple files totaling exactly aggregate limit', async () => {
     let inferenceCallCount = 0;
-    const fileSize = 256 * 1024;
+    const fileSize = AGENT_RUNTIME_LIMITS_DEFAULTS.attachedFileBytes;
     const contents = ['a'.repeat(fileSize), 'b'.repeat(fileSize), 'c'.repeat(fileSize), 'd'.repeat(fileSize)];
     const filePaths = ['fileA.txt', 'fileB.txt', 'fileC.txt', 'fileD.txt'];
     const context = setup(
@@ -727,7 +746,7 @@ await describe('AgentRunService - Attached Project Files', () => {
 
   it('rejects when aggregate size exceeds limit', async () => {
     let inferenceCallCount = 0;
-    const fileSize = 256 * 1024;
+    const fileSize = AGENT_RUNTIME_LIMITS_DEFAULTS.attachedFileBytes;
     const context = setup(
       async () => {
         inferenceCallCount += 1;
@@ -761,9 +780,71 @@ await describe('AgentRunService - Attached Project Files', () => {
     assert.equal(latestRun.status, 'error');
     assert.equal(latestRun.safeError?.stage, 'attached_files_load');
     assert.equal(latestRun.safeError?.code, 'ATTACHED_FILES_TOO_LARGE');
-    assert.equal(latestRun.safeError?.actualBytes, 1024 * 1024 + 1);
-    assert.equal(latestRun.safeError?.limitBytes, 1024 * 1024);
+    assert.equal(
+      latestRun.safeError?.actualBytes,
+      AGENT_RUNTIME_LIMITS_DEFAULTS.attachedFilesTotalBytes + 1,
+    );
+    assert.equal(
+      latestRun.safeError?.limitBytes,
+      AGENT_RUNTIME_LIMITS_DEFAULTS.attachedFilesTotalBytes,
+    );
+    assert.equal(latestRun.safeError?.inputFile, 'fileE.txt');
     context.db.close();
+  });
+
+  it('honors configured per-file and aggregate attachment boundaries', async () => {
+    for (const testCase of [
+      { sizes: [2_048], expectedStatus: 'done', expectedCode: undefined },
+      { sizes: [2_049], expectedStatus: 'error', expectedCode: 'ATTACHED_FILE_TOO_LARGE' },
+      { sizes: [1_500, 1_500], expectedStatus: 'done', expectedCode: undefined },
+      { sizes: [1_500, 1_501], expectedStatus: 'error', expectedCode: 'ATTACHED_FILES_TOO_LARGE' },
+    ] as const) {
+      let inferenceCallCount = 0;
+      const filePaths = testCase.sizes.map((_, index) => `configured-${index}.txt`);
+      const context = setup(
+        async () => {
+          inferenceCallCount += 1;
+          return { type: 'message', content: 'Done' } as ModelInferenceResult;
+        },
+        {
+          agentData: { attachedProjectFiles: filePaths },
+          filesystem: {
+            readFile: async (_projectId, path) => {
+              const index = filePaths.indexOf(String(path));
+              const size = testCase.sizes[index];
+              if (size === undefined) throw new ProjectFilesystemError('PROJECT_FILE_NOT_FOUND');
+              return { relativePath: String(path), content: 'x'.repeat(size), size };
+            },
+          },
+          runtimeLimits: {
+            getAgentRuntimeLimits: async () => ({
+              ...AGENT_RUNTIME_LIMITS_DEFAULTS,
+              attachedFileBytes: 2_048,
+              attachedFilesTotalBytes: 3_000,
+            }),
+          },
+        },
+      );
+      const run = await context.service.start(context.project.id, context.agent.id);
+      await waitFor(
+        () =>
+          context.service.get(context.project.id, context.agent.id, run.id)?.status ===
+          testCase.expectedStatus,
+      );
+      const terminal = context.service.get(context.project.id, context.agent.id, run.id)!;
+      assert.equal(inferenceCallCount, testCase.expectedStatus === 'done' ? 1 : 0);
+      assert.equal(terminal.safeError?.code, testCase.expectedCode);
+      if (testCase.expectedCode === 'ATTACHED_FILE_TOO_LARGE') {
+        assert.equal(terminal.safeError?.actualBytes, 2_049);
+        assert.equal(terminal.safeError?.limitBytes, 2_048);
+      }
+      if (testCase.expectedCode === 'ATTACHED_FILES_TOO_LARGE') {
+        assert.equal(terminal.safeError?.actualBytes, 3_001);
+        assert.equal(terminal.safeError?.limitBytes, 3_000);
+        assert.equal(terminal.safeError?.inputFile, 'configured-1.txt');
+      }
+      context.db.close();
+    }
   });
 
   it('does not send partial attachment context when loading fails', async () => {
@@ -872,8 +953,4 @@ await describe('AgentRunService - Attached Project Files', () => {
     context.db.close();
   });
 });
-
-
-
-
 
